@@ -152,6 +152,23 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions" \
   }' | jq
 ```
 
+创建时可以指定 session 专属的 system prompt。默认 `append` 会保留 Pi 内置的 coding-agent
+prompt，并在其后追加指令：
+
+```bash
+curl -sS -X POST "${BRIDGE_URL}/v1/sessions" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{
+    "name":"review-in-chinese",
+    "system_prompt":"始终使用中文；修改代码前先说明计划。",
+    "system_prompt_mode":"append"
+  }' | jq
+```
+
+`system_prompt_mode=replace` 会改用给定文本完全替换 Pi 默认 prompt，仅应在调用方自行提供了
+完整 Agent 行为约束时使用。Session 的完整 system prompt 会随创建、详情和列表响应返回；调用方
+不应把其中的敏感内容写入日志。
+
 列出历史 session：
 
 ```bash
@@ -295,6 +312,28 @@ curl -sS -X DELETE "${BRIDGE_URL}/v1/sessions/${SESSION_ID}" -H "$AUTH"
 
 当前 PATCH 只允许修改名称。活动 session 默认拒绝删除；确认后可用
 `DELETE ...?force=true`。删除 session 不会递归删除其 `cwd`，避免误删共享工作目录。
+
+### 编辑 Session system prompt
+
+更新配置在下一条 prompt 前生效：若 Pi 正处于 idle，bridge 会在发送下一条 prompt 前重启该
+Session 的 Pi RPC 进程；若正在生成则返回 `409 session_streaming`，需先等待或 stop。更新和
+清除都不会改写 Pi 的历史 JSONL。
+
+```bash
+# 完整替换该 Session 的自定义配置；append 是默认模式
+curl -sS -X PUT "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/system-prompt" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"system_prompt":"所有回答用中文，先运行相关测试。","system_prompt_mode":"append"}' | jq
+
+# 高级模式：替换 Pi 的内置 system prompt
+curl -sS -X PUT "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/system-prompt" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"system_prompt":"You are a terse code reviewer.","system_prompt_mode":"replace"}' | jq
+
+# 清除自定义配置，恢复 Pi 默认 prompt
+curl -sS -X DELETE "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/system-prompt" \
+  -H "$AUTH" | jq
+```
 
 ## 网络策略
 

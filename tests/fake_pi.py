@@ -30,6 +30,8 @@ session_file = (
 session_name = argument("--name") or session_id
 provider = argument("--provider") or "fake"
 model = argument("--model") or "fake-model"
+system_prompt = argument("--system-prompt")
+append_system_prompt = argument("--append-system-prompt")
 entries: list[dict[str, Any]] = []
 
 if session_file.is_file():
@@ -53,6 +55,8 @@ def persist() -> None:
         "id": session_id,
         "timestamp": datetime.now(UTC).isoformat(),
         "cwd": str(Path.cwd()),
+        "fakeSystemPrompt": system_prompt or append_system_prompt,
+        "fakeSystemPromptMode": "replace" if system_prompt is not None else "append",
     }
     info = {"type": "session_info", "id": "name", "name": session_name}
     lines = [header, info, *entries]
@@ -127,7 +131,8 @@ for line in sys.stdin:
         respond(command)
         emit({"type": "agent_start"})
         emit({"type": "message_end", "message": entries[-1]})
-        emit({"type": "agent_end"})
+        if command["message"] != "keep-streaming":
+            emit({"type": "agent_end"})
     elif command_type == "get_entries":
         selected = entries
         since = command.get("since")

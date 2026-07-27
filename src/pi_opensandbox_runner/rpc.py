@@ -41,12 +41,14 @@ class PiRpcProcess:
         session_id: str,
         process: asyncio.subprocess.Process,
         timeout: float,
+        system_prompt_config: tuple[str | None, str],
         on_event: EventHandler,
         on_exit: ExitHandler,
     ):
         self.session_id = session_id
         self.process = process
         self.timeout = timeout
+        self.system_prompt_config = system_prompt_config
         self.on_event = on_event
         self.on_exit = on_exit
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -91,6 +93,13 @@ class PiRpcProcess:
                     record.name,
                 ]
             )
+        if record.system_prompt is not None:
+            prompt_flag = (
+                "--system-prompt"
+                if record.system_prompt_mode == "replace"
+                else "--append-system-prompt"
+            )
+            args.extend([prompt_flag, record.system_prompt])
         environment = os.environ.copy()
         environment["HOME"] = "/root"
         environment["PI_CODING_AGENT_SESSION_DIR"] = str(settings.pi_session_dir)
@@ -107,6 +116,7 @@ class PiRpcProcess:
             session_id=record.id,
             process=process,
             timeout=settings.rpc_timeout_seconds,
+            system_prompt_config=(record.system_prompt, record.system_prompt_mode),
             on_event=on_event,
             on_exit=on_exit,
         )
@@ -263,6 +273,13 @@ class SessionSupervisor:
     def active(self, session_id: str) -> PiRpcProcess | None:
         process = self.processes.get(session_id)
         return process if process is not None and process.alive else None
+
+    def needs_system_prompt_restart(self, record: SessionRecord) -> bool:
+        process = self.active(record.id)
+        return process is not None and process.system_prompt_config != (
+            record.system_prompt,
+            record.system_prompt_mode,
+        )
 
     async def get_or_start(self, record: SessionRecord) -> PiRpcProcess:
         async with self._session_lock(record.id):

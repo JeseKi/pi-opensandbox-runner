@@ -21,6 +21,8 @@ class SessionRecord:
     provider: str
     model: str
     thinking_level: str | None
+    system_prompt: str | None
+    system_prompt_mode: str
     session_file: str | None
     created_at: str
     updated_at: str
@@ -50,6 +52,8 @@ class Catalog:
                         provider TEXT NOT NULL,
                         model TEXT NOT NULL,
                         thinking_level TEXT,
+                        system_prompt TEXT,
+                        system_prompt_mode TEXT NOT NULL DEFAULT 'append',
                         session_file TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
@@ -61,12 +65,23 @@ class Catalog:
                     ON sessions(updated_at DESC, id DESC);
                     """
                 )
+                self._ensure_session_columns(db)
         await self.reconcile_files()
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path)
         db.row_factory = sqlite3.Row
         return db
+
+    @staticmethod
+    def _ensure_session_columns(db: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(sessions)")}
+        if "system_prompt" not in columns:
+            db.execute("ALTER TABLE sessions ADD COLUMN system_prompt TEXT")
+        if "system_prompt_mode" not in columns:
+            db.execute(
+                "ALTER TABLE sessions ADD COLUMN system_prompt_mode TEXT NOT NULL DEFAULT 'append'"
+            )
 
     @staticmethod
     def _record(row: sqlite3.Row) -> SessionRecord:
@@ -81,6 +96,8 @@ class Catalog:
         provider: str,
         model: str,
         thinking_level: str | None,
+        system_prompt: str | None = None,
+        system_prompt_mode: str = "append",
     ) -> SessionRecord:
         now = utc_now()
         async with self._lock:
@@ -88,9 +105,10 @@ class Catalog:
                 db.execute(
                     """
                     INSERT INTO sessions
-                    (id, name, cwd, provider, model, thinking_level, session_file,
+                    (id, name, cwd, provider, model, thinking_level, system_prompt,
+                     system_prompt_mode, session_file,
                      created_at, updated_at, last_status, last_error, event_seq)
-                    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'stopped', NULL, 0)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'stopped', NULL, 0)
                     """,
                     (
                         session_id,
@@ -99,6 +117,8 @@ class Catalog:
                         provider,
                         model,
                         thinking_level,
+                        system_prompt,
+                        system_prompt_mode,
                         now,
                         now,
                     ),
@@ -183,6 +203,30 @@ class Catalog:
         assert row is not None
         return self._record(row)
 
+    async def update_system_prompt(
+        self,
+        session_id: str,
+        *,
+        system_prompt: str | None,
+        system_prompt_mode: str = "append",
+    ) -> SessionRecord | None:
+        now = utc_now()
+        async with self._lock:
+            with self._connect() as db:
+                result = db.execute(
+                    """
+                    UPDATE sessions
+                    SET system_prompt = ?, system_prompt_mode = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (system_prompt, system_prompt_mode, now, session_id),
+                )
+                if result.rowcount == 0:
+                    return None
+                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        assert row is not None
+        return self._record(row)
+
     async def set_runtime(
         self,
         session_id: str,
@@ -252,9 +296,10 @@ class Catalog:
                     db.execute(
                         """
                         INSERT OR IGNORE INTO sessions
-                        (id, name, cwd, provider, model, thinking_level, session_file,
+                        (id, name, cwd, provider, model, thinking_level, system_prompt,
+                         system_prompt_mode, session_file,
                          created_at, updated_at, last_status, last_error, event_seq)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', NULL, 0)
+                        VALUES (?, ?, ?, ?, ?, ?, NULL, 'append', ?, ?, ?, 'stopped', NULL, 0)
                         """,
                         (
                             parsed["id"],

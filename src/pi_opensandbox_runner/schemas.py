@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 DeliveryMode = Literal["auto", "steer", "follow_up"]
+SystemPromptMode = Literal["append", "replace"]
 
 
 class SessionCreate(BaseModel):
@@ -14,6 +15,8 @@ class SessionCreate(BaseModel):
     model: str | None = Field(default=None, min_length=1, max_length=240)
     thinking_level: ThinkingLevel | None = None
     cwd: str | None = Field(default=None, min_length=1, max_length=4096)
+    system_prompt: str | None = Field(default=None, min_length=1, max_length=100_000)
+    system_prompt_mode: SystemPromptMode = "append"
 
     @field_validator("name")
     @classmethod
@@ -49,6 +52,8 @@ class SessionOut(BaseModel):
     provider: str
     model: str
     thinking_level: str | None
+    system_prompt: str | None
+    system_prompt_mode: SystemPromptMode
     session_file: str | None
     materialized: bool
     state: str
@@ -91,6 +96,18 @@ class PromptAccepted(BaseModel):
     command_id: str
     session_id: str
     delivery: Literal["prompt", "steer", "follow_up"]
+
+
+class SystemPromptUpdate(BaseModel):
+    system_prompt: str = Field(min_length=1, max_length=100_000)
+    system_prompt_mode: SystemPromptMode = "append"
+
+    @field_validator("system_prompt")
+    @classmethod
+    def clean_system_prompt(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("system_prompt cannot be blank")
+        return value
 
 
 class CommandCreate(BaseModel):

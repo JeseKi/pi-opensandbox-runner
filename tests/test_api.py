@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -123,6 +124,7 @@ async def test_docs_use_the_opensandbox_proxy_prefix(client: AsyncClient) -> Non
     assert schema.json()["paths"]["/v1/sessions"]["get"]["security"] == [
         {"HTTPBearer": []}
     ]
+    assert "/v1/sessions/{session_id}/system-prompt" in schema.json()["paths"]
 
 
 @pytest.mark.asyncio
@@ -164,3 +166,82 @@ async def test_validation_listing_and_event_replay(client: AsyncClient) -> None:
         headers={"Last-Event-ID": "not-an-integer"},
     )
     assert bad_event_cursor.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_session_system_prompt_lifecycle(client: AsyncClient) -> None:
+    created = await client.post(
+        "/v1/sessions",
+        json={
+            "name": "prompted",
+            "system_prompt": "Always answer in Chinese.",
+        },
+    )
+    assert created.status_code == 201
+    session = created.json()
+    session_id = session["id"]
+    assert session["system_prompt"] == "Always answer in Chinese."
+    assert session["system_prompt_mode"] == "append"
+
+    listed = await client.get("/v1/sessions")
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["system_prompt"] == "Always answer in Chinese."
+
+    replace = await client.put(
+        f"/v1/sessions/{session_id}/system-prompt",
+        json={"system_prompt": "You are a terse reviewer.", "system_prompt_mode": "replace"},
+    )
+    assert replace.status_code == 200
+    assert replace.json()["system_prompt_mode"] == "replace"
+
+    first_prompt = await client.post(
+        f"/v1/sessions/{session_id}/prompts", json={"message": "hello"}
+    )
+    assert first_prompt.status_code == 202
+    after_first = await client.get(f"/v1/sessions/{session_id}")
+    session_file = Path(after_first.json()["session_file"])
+    header = json.loads(session_file.read_text(encoding="utf-8").splitlines()[0])
+    assert header["fakeSystemPrompt"] == "You are a terse reviewer."
+    assert header["fakeSystemPromptMode"] == "replace"
+
+    append = await client.put(
+        f"/v1/sessions/{session_id}/system-prompt",
+        json={"system_prompt": "Use Chinese.", "system_prompt_mode": "append"},
+    )
+    assert append.status_code == 200
+    resumed = await client.post(
+        f"/v1/sessions/{session_id}/prompts", json={"message": "again"}
+    )
+    assert resumed.status_code == 202
+    header = json.loads(session_file.read_text(encoding="utf-8").splitlines()[0])
+    assert header["fakeSystemPrompt"] == "Use Chinese."
+    assert header["fakeSystemPromptMode"] == "append"
+
+    cleared = await client.delete(f"/v1/sessions/{session_id}/system-prompt")
+    assert cleared.status_code == 200
+    assert cleared.json()["system_prompt"] is None
+    assert cleared.json()["system_prompt_mode"] == "append"
+    no_prompt = await client.post(
+        f"/v1/sessions/{session_id}/prompts", json={"message": "default"}
+    )
+    assert no_prompt.status_code == 202
+    header = json.loads(session_file.read_text(encoding="utf-8").splitlines()[0])
+    assert header["fakeSystemPrompt"] is None
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_cannot_change_while_streaming(client: AsyncClient) -> None:
+    created = await client.post("/v1/sessions", json={"name": "streaming"})
+    session_id = created.json()["id"]
+    accepted = await client.post(
+        f"/v1/sessions/{session_id}/prompts", json={"message": "keep-streaming"}
+    )
+    assert accepted.status_code == 202
+
+    changed = await client.put(
+        f"/v1/sessions/{session_id}/system-prompt",
+        json={"system_prompt": "new instruction"},
+    )
+    assert changed.status_code == 409
+    assert changed.json()["code"] == "session_streaming"
+    await client.post(f"/v1/sessions/{session_id}/stop")

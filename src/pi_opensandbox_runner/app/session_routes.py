@@ -15,6 +15,7 @@ from ..schemas import (
     SessionOut,
     SessionPage,
     SessionPatch,
+    SystemPromptUpdate,
 )
 from .context import BridgeContext
 from .problems import ApiProblem
@@ -51,6 +52,8 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
             provider=provider,
             model=model,
             thinking_level=payload.thinking_level,
+            system_prompt=payload.system_prompt,
+            system_prompt_mode=payload.system_prompt_mode,
         )
         return await session_out(record, ctx.supervisor)
 
@@ -99,6 +102,42 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
         assert updated is not None
         return await session_out(updated, ctx.supervisor)
 
+    @router.put("/sessions/{session_id}/system-prompt", response_model=SessionOut)
+    async def update_system_prompt(
+        session_id: str, payload: SystemPromptUpdate
+    ) -> SessionOut:
+        async with ctx.supervisor.command_lock(session_id):
+            record = await ctx.require_session(session_id)
+            process = ctx.supervisor.active(session_id)
+            if process is not None and process.is_streaming:
+                raise ApiProblem(
+                    409,
+                    "session_streaming",
+                    "stop or wait for the current agent turn before changing the system prompt",
+                )
+            updated = await ctx.catalog.update_system_prompt(
+                record.id,
+                system_prompt=payload.system_prompt,
+                system_prompt_mode=payload.system_prompt_mode,
+            )
+        assert updated is not None
+        return await session_out(updated, ctx.supervisor)
+
+    @router.delete("/sessions/{session_id}/system-prompt", response_model=SessionOut)
+    async def clear_system_prompt(session_id: str) -> SessionOut:
+        async with ctx.supervisor.command_lock(session_id):
+            record = await ctx.require_session(session_id)
+            process = ctx.supervisor.active(session_id)
+            if process is not None and process.is_streaming:
+                raise ApiProblem(
+                    409,
+                    "session_streaming",
+                    "stop or wait for the current agent turn before changing the system prompt",
+                )
+            updated = await ctx.catalog.update_system_prompt(record.id, system_prompt=None)
+        assert updated is not None
+        return await session_out(updated, ctx.supervisor)
+
     @router.delete("/sessions/{session_id}", status_code=204)
     async def delete_session(session_id: str, force: bool = False) -> Response:
         record = await ctx.require_session(session_id)
@@ -124,10 +163,12 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
         status_code=202,
     )
     async def prompt(session_id: str, payload: PromptCreate) -> PromptAccepted:
-        record = await ctx.require_session(session_id)
         command_id = str(uuid.uuid4())
         async with ctx.supervisor.command_lock(session_id):
             try:
+                record = await ctx.require_session(session_id)
+                if ctx.supervisor.needs_system_prompt_restart(record):
+                    await ctx.supervisor.stop(session_id, abort=False)
                 process = await ctx.supervisor.get_or_start(record)
                 state_response = await process.request({"type": "get_state"})
                 state_data = state_response.get("data")
