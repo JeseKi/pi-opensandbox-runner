@@ -1,0 +1,14 @@
+FROM opensandbox/server:v0.2.2
+
+# OpenSandbox v0.2.2 hard-codes 0.0.0.0 for the Docker ports it allocates for
+# execd and optional egress sidecars.  This runner is intentionally local-only:
+# bind every such port to loopback.  Its generic server proxy also strips
+# Authorization, which prevents the bridge's own Bearer authentication from
+# reaching it; retain that header for the local-only sandbox proxy.
+RUN set -eux; \
+    sed -i 's/DOCKER_PUBLISH_HOST = "0.0.0.0"/DOCKER_PUBLISH_HOST = "127.0.0.1"/' \
+        /app/opensandbox_server/services/docker/port_allocator.py; \
+    sed -i 's/"44772": ("0.0.0.0"/"44772": ("127.0.0.1"/; s/"8080": ("0.0.0.0"/"8080": ("127.0.0.1"/' \
+        /app/opensandbox_server/services/docker/networking.py; \
+    sed -i '/^[[:space:]]*"authorization",$/d' \
+        /app/opensandbox_server/api/proxy.py

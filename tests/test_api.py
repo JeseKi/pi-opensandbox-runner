@@ -99,6 +99,24 @@ async def test_auth_and_session_lifecycle(client: AsyncClient, tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_docs_use_the_opensandbox_proxy_prefix(client: AsyncClient) -> None:
+    docs = await client.get("/docs")
+    assert docs.status_code == 200
+    assert "url: 'openapi.json'" in docs.text
+
+    schema = await client.get("/openapi.json")
+    assert schema.status_code == 200
+    assert schema.json()["servers"] == [{"url": "."}]
+    assert schema.json()["components"]["securitySchemes"]["HTTPBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    assert schema.json()["paths"]["/v1/sessions"]["get"]["security"] == [
+        {"HTTPBearer": []}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_validation_listing_and_event_replay(client: AsyncClient) -> None:
     bad_model = await client.post(
         "/v1/sessions",

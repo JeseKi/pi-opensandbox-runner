@@ -74,7 +74,7 @@ if [[ -n "$PROVIDER" || -n "$MODEL" ]] && [[ -z "$PROVIDER" || -z "$MODEL" ]]; t
 fi
 
 ensure_server_config
-docker compose --project-directory "$PROJECT_DIR" up --detach
+docker compose --project-directory "$PROJECT_DIR" up --detach --build
 wait_for_server
 docker build \
   --build-arg "MIRROR_MODE=${MIRROR_MODE_VALUE}" \
@@ -181,6 +181,13 @@ CREATE_RESPONSE="$(api POST /v1/sandboxes \
   --header "Content-Type: application/json" \
   --data "$PAYLOAD")"
 SANDBOX_ID="$(jq -er '.id' <<<"$CREATE_RESPONSE")"
+SANDBOX_RECORDED=false
+cleanup_unrecorded_sandbox() {
+  if [[ "$SANDBOX_RECORDED" == false && -n "${SANDBOX_ID:-}" ]]; then
+    api DELETE "/v1/sandboxes/${SANDBOX_ID}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_unrecorded_sandbox ERR
 
 for attempt in {1..120}; do
   SANDBOX_RESPONSE="$(api GET "/v1/sandboxes/${SANDBOX_ID}")"
@@ -197,7 +204,10 @@ if [[ "${SANDBOX_STATE:-}" != "Running" ]]; then
   exit 1
 fi
 
-ENDPOINT_RESPONSE="$(api GET "/v1/sandboxes/${SANDBOX_ID}/endpoints/8765")"
+# Use the OpenSandbox server proxy rather than direct ingress.  The server
+# itself is published only on 127.0.0.1 by compose.yaml, so this avoids Docker
+# publishing a per-sandbox port on 0.0.0.0.
+ENDPOINT_RESPONSE="$(api GET "/v1/sandboxes/${SANDBOX_ID}/endpoints/8765?use_server_proxy=true")"
 RAW_ENDPOINT="$(jq -er '.endpoint' <<<"$ENDPOINT_RESPONSE")"
 BRIDGE_URL="$(endpoint_url "$RAW_ENDPOINT")"
 
@@ -228,6 +238,8 @@ jq -n \
     workspace_volume: $workspace_volume
   }' >"$STATE_FILE"
 chmod 600 "$STATE_FILE"
+SANDBOX_RECORDED=true
+trap - ERR
 
 echo "Sandbox '$NAME' is ready."
 echo "Bridge URL: $BRIDGE_URL"

@@ -76,8 +76,10 @@ ensure_server_config() {
     echo 'path = "/root/.opensandbox/opensandbox.db"'
     echo
     echo '[docker]'
-    echo 'network_mode = "bridge"'
-    echo 'host_ip = "127.0.0.1"'
+    # Sandboxes share this private Docker network with the OpenSandbox server.
+    # The server proxy can therefore reach the bridge directly by its
+    # container IP; port 8765 is never published on the host.
+    echo 'network_mode = "pi-runner-internal"'
     echo 'port_range_min = 40000'
     echo 'port_range_max = 60000'
     echo 'drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]'

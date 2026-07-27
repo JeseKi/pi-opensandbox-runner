@@ -11,7 +11,9 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .catalog import Catalog, SessionRecord
 from .config import Settings
@@ -32,6 +34,9 @@ from .schemas import (
     SessionPage,
     SessionPatch,
 )
+
+BEARER_AUTH = HTTPBearer(auto_error=False)
+BearerCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(BEARER_AUTH)]
 
 
 class ApiProblem(Exception):
@@ -93,12 +98,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="Pi OpenSandbox Runner",
         version="0.1.0",
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
     )
     app.state.settings = resolved
     app.state.catalog = catalog
     app.state.journal = journal
     app.state.supervisor = supervisor
     app.state.ready = False
+
+    # OpenSandbox may expose the bridge through either its direct ingress or
+    # its localhost-only server proxy.  The latter includes the sandbox ID in
+    # the URL, which is unknown until after creation.  Relative URLs keep the
+    # Swagger document and API calls below whichever proxy prefix was used.
+    original_openapi = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        schema = original_openapi()
+        schema["servers"] = [{"url": "."}]
+        return schema
+
+    app.openapi = openapi  # type: ignore[method-assign]
+
+    @app.get("/docs", include_in_schema=False)
+    async def docs() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url="openapi.json",
+            title=f"{app.title} - Swagger UI",
+        )
 
     @app.exception_handler(ApiProblem)
     async def handle_problem(request: Request, exc: ApiProblem) -> JSONResponse:
@@ -135,10 +162,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ready"}
 
     def authenticate(
-        authorization: Annotated[str | None, Header()] = None,
+        credentials: BearerCredentials = None,
     ) -> None:
-        expected = f"Bearer {resolved.api_token}"
-        if authorization is None or not hmac.compare_digest(authorization, expected):
+        if (
+            credentials is None
+            or credentials.scheme.lower() != "bearer"
+            or not hmac.compare_digest(credentials.credentials, resolved.api_token)
+        ):
             raise ApiProblem(401, "unauthorized", "a valid bearer token is required")
 
     router = APIRouter(prefix="/v1", dependencies=[Depends(authenticate)])

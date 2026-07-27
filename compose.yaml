@@ -1,6 +1,9 @@
 services:
   opensandbox:
-    image: opensandbox/server:v0.2.2
+    image: pi-opensandbox-runner-opensandbox:local
+    build:
+      context: .
+      dockerfile: Dockerfile.opensandbox
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
@@ -12,6 +15,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./.runtime/opensandbox.toml:/etc/opensandbox/config.toml:ro
       - opensandbox-control:/root/.opensandbox
+    networks:
+      - pi-runner-internal
 
 volumes:
   opensandbox-control:
+
+networks:
+  pi-runner-internal:
+    name: pi-runner-internal

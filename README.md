@@ -104,6 +104,20 @@ cp .env.example .env
 Authorization: Bearer <bridge-token>
 ```
 
+API 文档可直接访问 `${BRIDGE_URL}/docs`。Swagger UI 使用相对 URL 加载
+`openapi.json`，所以无论 OpenSandbox 将它挂在何种代理前缀下（例如
+`http://127.0.0.1:8080/v1/sandboxes/<id>/proxy/8765/docs`），都不会错误请求站点根目录的
+`/openapi.json`。文档页面和 schema 本身不含密钥；实际 `/v1` 调用仍必须在 Swagger UI 的
+**Authorize** 中填写 Bearer token。
+
+默认只通过 OpenSandbox 的 server proxy 提供 bridge：compose 将该 server 固定发布到
+`127.0.0.1:8080`。项目内的 `Dockerfile.opensandbox` 还将 OpenSandbox Docker runtime
+自动分配的 execd/egress 端口强制绑定到 `127.0.0.1`，不会在 `0.0.0.0` 发布随机端口。若要让其他内网机器访问，
+请在宿主机上单独配置有认证的反向代理、VPN 或 SSH tunnel；不要直接改为 Docker 全接口监听。
+
+该本地派生镜像还会保留经 server proxy 进入 sandbox 的 `Authorization` 请求头；这是 bridge
+Bearer 鉴权及 Swagger UI 的 **Authorize** 功能所必需的。OpenSandbox 的管理 API key 仍不会转发。
+
 下面假定：
 
 ```bash
