@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -96,6 +98,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     supervisor = SessionSupervisor(resolved, catalog, journal)
     execd = ExecdClient(resolved.execd_url)
+    max_text_file_bytes = 1_048_576
+    file_locks: dict[str, asyncio.Lock] = {}
+    file_locks_guard = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -201,7 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path: str,
         *,
         params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
+        json: Any | None = None,
         headers: dict[str, str] | None = None,
         files: Any | None = None,
     ) -> Response:
@@ -222,6 +227,95 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             media_type=upstream.headers.get("content-type"),
             headers=response_headers,
         )
+
+    async def get_file_info(path: str) -> dict[str, Any]:
+        try:
+            info_response = await execd.request("GET", "/files/info", params={"path": path})
+            info = info_response.json()
+            entry = info.get(path) if isinstance(info, dict) else None
+        except ExecdError as exc:
+            raise ApiProblem(exc.status_code, "execd_request_failed", exc.detail) from exc
+        if not isinstance(entry, dict):
+            raise ApiProblem(404, "file_not_found", "path does not identify a file system entry")
+        return entry
+
+    async def get_file_bytes(path: str) -> tuple[dict[str, Any], bytes]:
+        entry = await get_file_info(path)
+        if entry.get("type") != "file":
+            raise ApiProblem(422, "not_a_file", "path must identify an existing regular file")
+        try:
+            content_response = await execd.request("GET", "/files/download", params={"path": path})
+        except ExecdError as exc:
+            raise ApiProblem(exc.status_code, "execd_request_failed", exc.detail) from exc
+        return entry, content_response.content
+
+    async def get_editable_text_file(path: str) -> tuple[dict[str, Any], bytes]:
+        """Read an existing, reasonably sized UTF-8 text file for conditional saving."""
+        entry, content = await get_file_bytes(path)
+        size = entry.get("size")
+        if not isinstance(size, int) or size > max_text_file_bytes:
+            raise ApiProblem(
+                422,
+                "not_editable_text_file",
+                f"file must be at most {max_text_file_bytes} bytes for text editing",
+            )
+        try:
+            decoded = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ApiProblem(422, "not_editable_text_file", "file is not valid UTF-8 text") from exc
+        if "\x00" in decoded:
+            raise ApiProblem(422, "not_editable_text_file", "file contains NUL bytes")
+        return entry, content
+
+    def file_etag(content: bytes) -> str:
+        return f'"sha256:{hashlib.sha256(content).hexdigest()}"'
+
+    def require_if_match(if_match: str | None, current_etag: str, entry: dict[str, Any]) -> None:
+        if if_match is None:
+            raise ApiProblem(
+                428,
+                "precondition_required",
+                "If-Match with the file ETag is required",
+            )
+        if if_match != current_etag:
+            raise ApiProblem(
+                412,
+                "file_conflict",
+                "file changed after it was read",
+                extra={
+                    "current_etag": current_etag,
+                    "size": entry.get("size"),
+                    "modified_at": entry.get("modified_at"),
+                },
+            )
+
+    async def file_lock(path: str) -> asyncio.Lock:
+        async with file_locks_guard:
+            return file_locks.setdefault(path, asyncio.Lock())
+
+    async def upload_bytes(
+        path: str,
+        content: bytes,
+        *,
+        filename: str,
+        content_type: str,
+        source_entry: dict[str, Any] | None = None,
+    ) -> None:
+        metadata: dict[str, Any] = {"path": path}
+        if source_entry is not None:
+            for key in ("owner", "group", "mode"):
+                value = source_entry.get(key)
+                if value is not None:
+                    metadata[key] = value
+        files = {
+            "metadata": (
+                "metadata.json",
+                json.dumps(metadata, separators=(",", ":")),
+                "application/json",
+            ),
+            "file": (filename, content, content_type),
+        }
+        await execd_request("POST", "/files/upload", files=files)
 
     @router.post("/sessions", response_model=SessionOut, status_code=201)
     async def create_session(payload: SessionCreate) -> SessionOut:
@@ -425,20 +519,125 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if limit is not None:
             params["limit"] = limit
         headers = {"Range": range_header} if range_header is not None else None
-        return await execd_request("GET", "/files/download", params=params, headers=headers)
+        try:
+            upstream = await execd.request("GET", "/files/download", params=params, headers=headers)
+        except ExecdError as exc:
+            raise ApiProblem(exc.status_code, "execd_request_failed", exc.detail) from exc
+        response_headers = {
+            name: value
+            for name in ("content-disposition", "content-range")
+            if (value := upstream.headers.get(name)) is not None
+        }
+        if offset is None and limit is None and range_header is None:
+            entry = await get_file_info(path)
+            response_headers["ETag"] = file_etag(upstream.content)
+            response_headers["X-File-Size"] = str(entry.get("size", ""))
+            if (modified_at := entry.get("modified_at")) is not None:
+                response_headers["X-File-Modified-At"] = str(modified_at)
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=response_headers,
+        )
 
     @router.delete("/files", status_code=204)
-    async def delete_file(path: str) -> Response:
+    async def delete_file(
+        path: str,
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Response:
         """Delete one file; directory deletion is intentionally not exposed here."""
-        await execd_request("DELETE", "/files", params={"path": path})
+        lock = await file_lock(path)
+        async with lock:
+            entry, content = await get_file_bytes(path)
+            require_if_match(if_match, file_etag(content), entry)
+            await execd_request("DELETE", "/files", params={"path": path})
         return Response(status_code=204)
+
+    @router.put("/files/content", status_code=204)
+    async def update_text_file(
+        path: str,
+        request: Request,
+        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    ) -> Response:
+        """Replace an existing UTF-8 text file in full; binary files are rejected."""
+        content_type = request.headers.get("content-type", "")
+        if not content_type.lower().startswith("text/plain"):
+            raise ApiProblem(
+                415,
+                "unsupported_media_type",
+                "Content-Type must be text/plain; charset=utf-8",
+            )
+        encoded_content = await request.body()
+        if len(encoded_content) > max_text_file_bytes:
+            raise ApiProblem(
+                422,
+                "not_editable_text_file",
+                f"replacement content must be at most {max_text_file_bytes} bytes",
+            )
+        try:
+            decoded_content = encoded_content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ApiProblem(
+                422, "not_editable_text_file", "replacement is not valid UTF-8 text"
+            ) from exc
+        if "\x00" in decoded_content:
+            raise ApiProblem(422, "not_editable_text_file", "replacement contains NUL bytes")
+        lock = await file_lock(path)
+        async with lock:
+            entry, current_content = await get_editable_text_file(path)
+            require_if_match(if_match, file_etag(current_content), entry)
+            temporary_path = f"{path}.pi-runner-{uuid.uuid4().hex}.tmp"
+            try:
+                await upload_bytes(
+                    temporary_path,
+                    encoded_content,
+                    filename=Path(path).name or "file",
+                    content_type="text/plain; charset=utf-8",
+                    source_entry=entry,
+                )
+                await execd_request(
+                    "POST",
+                    "/command",
+                    json={
+                        "command": (
+                            "python -c 'import os; "
+                            "os.replace(os.environ[\"PI_RUNNER_TMP\"], "
+                            "os.environ[\"PI_RUNNER_DEST\"])'"
+                        ),
+                        "envs": {
+                            "PI_RUNNER_TMP": temporary_path,
+                            "PI_RUNNER_DEST": path,
+                        },
+                        "timeout": 10_000,
+                    },
+                )
+                _, written_content = await get_file_bytes(path)
+                if file_etag(written_content) != file_etag(encoded_content):
+                    raise ApiProblem(
+                        502,
+                        "atomic_replace_failed",
+                        "replacement command completed without writing the expected content",
+                    )
+            except BaseException:
+                with suppress(ApiProblem):
+                    await execd_request("DELETE", "/files", params={"path": temporary_path})
+                raise
+        return Response(status_code=204, headers={"ETag": file_etag(encoded_content)})
 
     @router.post("/files/upload", status_code=201)
     async def upload_file(
         path: Annotated[str, Form(min_length=1, max_length=4096)],
         file: Annotated[UploadFile, File()],
+        if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
     ) -> Response:
         """Upload one file to a path, or use its original name in a target directory."""
+        if if_none_match != "*":
+            raise ApiProblem(
+                428,
+                "precondition_required",
+                "If-None-Match: * is required when creating a file",
+            )
         destination = path
         if path.endswith("/"):
             destination = str(Path(path) / Path(file.filename or "upload").name)
@@ -453,18 +652,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 entry = info.get(path) if isinstance(info, dict) else None
                 if isinstance(entry, dict) and entry.get("type") == "directory":
                     destination = str(Path(path) / Path(file.filename or "upload").name)
-        metadata = json.dumps({"path": destination}, separators=(",", ":"))
-        files = {
-            # Execd parses metadata as a multipart file part, not a normal
-            # text field, so it must carry a filename.
-            "metadata": ("metadata.json", metadata, "application/json"),
-            "file": (
-                file.filename or "upload",
-                file.file,
-                file.content_type or "application/octet-stream",
-            ),
-        }
-        return await execd_request("POST", "/files/upload", files=files)
+        lock = await file_lock(destination)
+        async with lock:
+            try:
+                await get_file_info(destination)
+            except ApiProblem as exc:
+                if exc.status_code != 404:
+                    raise
+            else:
+                raise ApiProblem(412, "file_exists", "a file already exists at the destination")
+            content = await file.read()
+            await upload_bytes(
+                destination,
+                content,
+                filename=file.filename or "upload",
+                content_type=file.content_type or "application/octet-stream",
+            )
+        return Response(status_code=201, headers={"ETag": file_etag(content)})
 
     @router.post("/commands")
     async def run_command(payload: CommandCreate) -> Response:

@@ -206,17 +206,28 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/stop" -H "$AUTH"
 # 类似 ls：默认只返回直接子项；提高 depth 可递归浏览
 curl -sS "${BRIDGE_URL}/v1/files?path=/root/workspace&depth=1" -H "$AUTH" | jq
 
-# 浏览文本文件第 20 至 69 行；不传 offset/limit 则作为二进制文件下载
+# 浏览文本文件第 20 至 69 行；不传 offset/limit 则作为二进制文件下载。
+# 完整读取的响应包含强 ETag，保存和删除时必须使用它。
 curl -sS "${BRIDGE_URL}/v1/files/content?path=/root/workspace/README.md&offset=20&limit=50" \
   -H "$AUTH"
 
-# 上传本地文件。path 可为完整目标文件路径，也可为已存在目录（自动使用原文件名）。
-curl -sS -X POST "${BRIDGE_URL}/v1/files/upload" -H "$AUTH" \
+# 上传仅创建新文件。path 可为完整目标文件路径，也可为已存在目录（自动使用原文件名）。
+curl -sS -X POST "${BRIDGE_URL}/v1/files/upload" -H "$AUTH" -H 'If-None-Match: *' \
   -F 'path=/root/workspace/' \
   -F 'file=@./input.csv'
 
-# 删除单个文件（不支持删除目录）
-curl -sS -X DELETE "${BRIDGE_URL}/v1/files?path=/root/workspace/input.csv" -H "$AUTH"
+# 条件保存：先完整读取并保存 ETag；仅接受 <= 1 MiB、有效 UTF-8、无 NUL 字节的普通文件。
+ETAG="$(curl -sS -D - -o /dev/null \
+  "${BRIDGE_URL}/v1/files/content?path=/root/workspace/notes.txt" -H "$AUTH" \
+  | awk 'BEGIN { IGNORECASE=1 } /^etag:/ { gsub("\\r", "", $2); print $2 }')"
+printf '更新后的文本\n' | curl -sS -X PUT \
+  "${BRIDGE_URL}/v1/files/content?path=/root/workspace/notes.txt" \
+  -H "$AUTH" -H "If-Match: ${ETAG}" -H 'Content-Type: text/plain; charset=utf-8' \
+  --data-binary @-
+
+# 删除也必须携带读取到的 ETag；过期版本会返回 412，不会覆盖或删除更新后的文件。
+curl -sS -X DELETE "${BRIDGE_URL}/v1/files?path=/root/workspace/input.csv" \
+  -H "$AUTH" -H "If-Match: ${ETAG}"
 
 # 执行命令。前台命令返回 Execd 的 SSE 输出；background=true 后可查询状态和日志。
 curl -N -X POST "${BRIDGE_URL}/v1/commands" \

@@ -27,7 +27,7 @@ class ExecdClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
+        json: Any | None = None,
         headers: dict[str, str] | None = None,
         files: Any | None = None,
     ) -> httpx.Response:
@@ -49,7 +49,7 @@ class ExecdClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
+        json: Any | None = None,
     ) -> httpx.Response:
         request = self._client.build_request(method, path, params=params, json=json)
         try:
