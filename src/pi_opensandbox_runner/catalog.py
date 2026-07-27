@@ -2,15 +2,42 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+from sqlalchemy import Integer, String, Text, and_, create_engine, event, or_, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+_Result = TypeVar("_Result")
 
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class SessionModel(Base):
+    __tablename__ = "sessions"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    cwd: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    thinking_level: Mapped[str | None] = mapped_column(String)
+    system_prompt: Mapped[str | None] = mapped_column(Text)
+    system_prompt_mode: Mapped[str] = mapped_column(String, nullable=False, default="append")
+    session_file: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    last_status: Mapped[str] = mapped_column(String, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    event_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 @dataclass(frozen=True)
@@ -31,61 +58,41 @@ class SessionRecord:
     event_seq: int
 
 
+def _record(item: SessionModel) -> SessionRecord:
+    return SessionRecord(**{key: getattr(item, key) for key in SessionRecord.__dataclass_fields__})
+
+
 class Catalog:
     def __init__(self, path: Path, pi_session_dir: Path):
-        self.path = path
-        self.pi_session_dir = pi_session_dir
+        self.path, self.pi_session_dir = path, pi_session_dir
         self._lock = asyncio.Lock()
+        self.engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+        event.listen(self.engine, "connect", self._configure_sqlite)
+        self.sessions = sessionmaker(bind=self.engine, expire_on_commit=False)
+
+    @staticmethod
+    def _configure_sqlite(connection: Any, _: Any) -> None:
+        cursor = connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
 
     async def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.pi_session_dir.mkdir(parents=True, exist_ok=True)
-        async with self._lock:
-            with self._connect() as db:
-                db.executescript(
-                    """
-                    PRAGMA journal_mode=WAL;
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        cwd TEXT NOT NULL,
-                        provider TEXT NOT NULL,
-                        model TEXT NOT NULL,
-                        thinking_level TEXT,
-                        system_prompt TEXT,
-                        system_prompt_mode TEXT NOT NULL DEFAULT 'append',
-                        session_file TEXT,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        last_status TEXT NOT NULL,
-                        last_error TEXT,
-                        event_seq INTEGER NOT NULL DEFAULT 0
-                    );
-                    CREATE INDEX IF NOT EXISTS sessions_updated
-                    ON sessions(updated_at DESC, id DESC);
-                    """
-                )
-                self._ensure_session_columns(db)
+        await asyncio.to_thread(Base.metadata.create_all, self.engine)
         await self.reconcile_files()
 
-    def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path)
-        db.row_factory = sqlite3.Row
-        return db
+    async def _run(self, operation: Callable[[Session], _Result]) -> _Result:
+        async with self._lock:
 
-    @staticmethod
-    def _ensure_session_columns(db: sqlite3.Connection) -> None:
-        columns = {row["name"] for row in db.execute("PRAGMA table_info(sessions)")}
-        if "system_prompt" not in columns:
-            db.execute("ALTER TABLE sessions ADD COLUMN system_prompt TEXT")
-        if "system_prompt_mode" not in columns:
-            db.execute(
-                "ALTER TABLE sessions ADD COLUMN system_prompt_mode TEXT NOT NULL DEFAULT 'append'"
-            )
+            def transaction() -> _Result:
+                with self.sessions.begin() as db:
+                    return operation(db)
 
-    @staticmethod
-    def _record(row: sqlite3.Row) -> SessionRecord:
-        return SessionRecord(**dict(row))
+            return await asyncio.to_thread(transaction)
 
     async def create(
         self,
@@ -100,78 +107,71 @@ class Catalog:
         system_prompt_mode: str = "append",
     ) -> SessionRecord:
         now = utc_now()
-        async with self._lock:
-            with self._connect() as db:
-                db.execute(
-                    """
-                    INSERT INTO sessions
-                    (id, name, cwd, provider, model, thinking_level, system_prompt,
-                     system_prompt_mode, session_file,
-                     created_at, updated_at, last_status, last_error, event_seq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'stopped', NULL, 0)
-                    """,
-                    (
-                        session_id,
-                        name,
-                        cwd,
-                        provider,
-                        model,
-                        thinking_level,
-                        system_prompt,
-                        system_prompt_mode,
-                        now,
-                        now,
-                    ),
-                )
-                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        assert row is not None
-        return self._record(row)
+
+        def operation(db: Session) -> SessionRecord:
+            item = SessionModel(
+                id=session_id,
+                name=name,
+                cwd=cwd,
+                provider=provider,
+                model=model,
+                thinking_level=thinking_level,
+                system_prompt=system_prompt,
+                system_prompt_mode=system_prompt_mode,
+                created_at=now,
+                updated_at=now,
+                last_status="stopped",
+                last_error=None,
+                event_seq=0,
+            )
+            db.add(item)
+            db.flush()
+            return _record(item)
+
+        return await self._run(operation)
 
     async def get(self, session_id: str) -> SessionRecord | None:
-        async with self._lock:
-            with self._connect() as db:
-                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        return None if row is None else self._record(row)
+        return await self._run(
+            lambda db: (
+                None if (item := db.get(SessionModel, session_id)) is None else _record(item)
+            )
+        )
 
     async def list_page(
-        self,
-        *,
-        limit: int,
-        before_updated_at: str | None = None,
-        before_id: str | None = None,
+        self, *, limit: int, before_updated_at: str | None = None, before_id: str | None = None
     ) -> list[SessionRecord]:
-        async with self._lock:
-            with self._connect() as db:
-                if before_updated_at is None:
-                    rows = db.execute(
-                        "SELECT * FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?",
-                        (limit,),
-                    ).fetchall()
-                else:
-                    rows = db.execute(
-                        """
-                        SELECT * FROM sessions
-                        WHERE updated_at < ?
-                           OR (updated_at = ? AND id < ?)
-                        ORDER BY updated_at DESC, id DESC LIMIT ?
-                        """,
-                        (before_updated_at, before_updated_at, before_id, limit),
-                    ).fetchall()
-        return [self._record(row) for row in rows]
+        def operation(db: Session) -> list[SessionRecord]:
+            stmt = select(SessionModel)
+            if before_updated_at is not None:
+                stmt = stmt.where(
+                    or_(
+                        SessionModel.updated_at < before_updated_at,
+                        and_(
+                            SessionModel.updated_at == before_updated_at,
+                            SessionModel.id < before_id,
+                        ),
+                    )
+                )
+            return [
+                _record(item)
+                for item in db.scalars(
+                    stmt.order_by(SessionModel.updated_at.desc(), SessionModel.id.desc()).limit(
+                        limit
+                    )
+                )
+            ]
+
+        return await self._run(operation)
 
     async def update_name(self, session_id: str, name: str) -> SessionRecord | None:
-        now = utc_now()
-        async with self._lock:
-            with self._connect() as db:
-                result = db.execute(
-                    "UPDATE sessions SET name = ?, updated_at = ? WHERE id = ?",
-                    (name, now, session_id),
-                )
-                if result.rowcount == 0:
-                    return None
-                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        assert row is not None
-        return self._record(row)
+        return await self._update(session_id, name=name)
+
+    async def update_system_prompt(
+        self, session_id: str, *, system_prompt: str | None, system_prompt_mode: str = "append"
+    ) -> SessionRecord | None:
+        return await self._update(
+            session_id, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode
+        )
 
     async def update_model_settings(
         self,
@@ -182,50 +182,25 @@ class Catalog:
         thinking_level: str | None = None,
         update_thinking_level: bool = False,
     ) -> SessionRecord | None:
-        """Persist the model state selected through Pi RPC for later resumes."""
-        fields: list[str] = ["updated_at = ?"]
-        values: list[str | None] = [utc_now()]
+        values: dict[str, Any] = {}
         if provider is not None and model is not None:
-            fields.extend(["provider = ?", "model = ?"])
-            values.extend([provider, model])
+            values.update(provider=provider, model=model)
         if update_thinking_level:
-            fields.append("thinking_level = ?")
-            values.append(thinking_level)
-        values.append(session_id)
-        async with self._lock:
-            with self._connect() as db:
-                result = db.execute(
-                    f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?", values
-                )
-                if result.rowcount == 0:
-                    return None
-                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        assert row is not None
-        return self._record(row)
+            values["thinking_level"] = thinking_level
+        return await self._update(session_id, **values)
 
-    async def update_system_prompt(
-        self,
-        session_id: str,
-        *,
-        system_prompt: str | None,
-        system_prompt_mode: str = "append",
-    ) -> SessionRecord | None:
-        now = utc_now()
-        async with self._lock:
-            with self._connect() as db:
-                result = db.execute(
-                    """
-                    UPDATE sessions
-                    SET system_prompt = ?, system_prompt_mode = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (system_prompt, system_prompt_mode, now, session_id),
-                )
-                if result.rowcount == 0:
-                    return None
-                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        assert row is not None
-        return self._record(row)
+    async def _update(self, session_id: str, **values: Any) -> SessionRecord | None:
+        def operation(db: Session) -> SessionRecord | None:
+            item = db.get(SessionModel, session_id)
+            if item is None:
+                return None
+            for key, value in values.items():
+                setattr(item, key, value)
+            item.updated_at = utc_now()
+            db.flush()
+            return _record(item)
+
+        return await self._run(operation)
 
     async def set_runtime(
         self,
@@ -236,44 +211,50 @@ class Catalog:
         session_file: str | None = None,
         touch: bool = True,
     ) -> None:
-        fields = ["last_status = ?", "last_error = ?"]
-        values: list[Any] = [status, error]
+        values: dict[str, Any] = {"last_status": status, "last_error": error}
         if session_file is not None:
-            fields.append("session_file = ?")
-            values.append(session_file)
-        if touch:
-            fields.append("updated_at = ?")
-            values.append(utc_now())
-        values.append(session_id)
+            values["session_file"] = session_file
+        if not touch:
+            values["updated_at"] = None
         async with self._lock:
-            with self._connect() as db:
-                db.execute(
-                    f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?",  # noqa: S608
-                    values,
-                )
+
+            def operation(db: Session) -> None:
+                item = db.get(SessionModel, session_id)
+                if item is None:
+                    return
+                for key, value in values.items():
+                    if key != "updated_at":
+                        setattr(item, key, value)
+                if touch:
+                    item.updated_at = utc_now()
+
+            await asyncio.to_thread(lambda: self._transaction(operation))
+
+    def _transaction(self, operation: Any) -> Any:
+        with self.sessions.begin() as db:
+            return operation(db)
 
     async def next_event_seq(self, session_id: str) -> int:
-        async with self._lock:
-            with self._connect() as db:
-                db.execute(
-                    "UPDATE sessions SET event_seq = event_seq + 1 WHERE id = ?",
-                    (session_id,),
-                )
-                row = db.execute(
-                    "SELECT event_seq FROM sessions WHERE id = ?", (session_id,)
-                ).fetchone()
-        if row is None:
-            raise KeyError(session_id)
-        return int(row["event_seq"])
+        def operation(db: Session) -> int:
+            item = db.get(SessionModel, session_id)
+            if item is None:
+                raise KeyError(session_id)
+            item.event_seq += 1
+            db.flush()
+            return item.event_seq
+
+        return await self._run(operation)
 
     async def delete(self, session_id: str) -> SessionRecord | None:
-        async with self._lock:
-            with self._connect() as db:
-                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-                if row is None:
-                    return None
-                db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        return self._record(row)
+        def operation(db: Session) -> SessionRecord | None:
+            item = db.get(SessionModel, session_id)
+            if item is None:
+                return None
+            result = _record(item)
+            db.delete(item)
+            return result
+
+        return await self._run(operation)
 
     async def reconcile_files(self) -> None:
         for path in sorted(self.pi_session_dir.glob("*.jsonl")):
@@ -281,38 +262,23 @@ class Catalog:
             if parsed is None:
                 continue
             existing = await self.get(str(parsed["id"]))
-            if existing is not None:
-                if existing.session_file != str(path):
-                    await self.set_runtime(
-                        existing.id,
-                        status=existing.last_status,
-                        error=existing.last_error,
-                        session_file=str(path),
-                        touch=False,
-                    )
-                continue
-            async with self._lock:
-                with self._connect() as db:
-                    db.execute(
-                        """
-                        INSERT OR IGNORE INTO sessions
-                        (id, name, cwd, provider, model, thinking_level, system_prompt,
-                         system_prompt_mode, session_file,
-                         created_at, updated_at, last_status, last_error, event_seq)
-                        VALUES (?, ?, ?, ?, ?, ?, NULL, 'append', ?, ?, ?, 'stopped', NULL, 0)
-                        """,
-                        (
-                            parsed["id"],
-                            parsed["name"],
-                            parsed["cwd"],
-                            parsed["provider"],
-                            parsed["model"],
-                            parsed["thinking_level"],
-                            str(path),
-                            parsed["created_at"],
-                            parsed["updated_at"],
-                        ),
-                    )
+            if existing is None:
+                await self.create(
+                    session_id=str(parsed["id"]),
+                    name=str(parsed["name"]),
+                    cwd=str(parsed["cwd"]),
+                    provider=str(parsed["provider"]),
+                    model=str(parsed["model"]),
+                    thinking_level=parsed["thinking_level"],
+                )
+            elif existing.session_file != str(path):
+                await self.set_runtime(
+                    existing.id,
+                    status=existing.last_status,
+                    error=existing.last_error,
+                    session_file=str(path),
+                    touch=False,
+                )
 
 
 def inspect_session_file(path: Path) -> dict[str, str | None] | None:
@@ -327,33 +293,35 @@ def _inspect_session_file(path: Path) -> dict[str, str | None] | None:
     thinking_level: str | None = None
     updated_at: str | None = None
     try:
-        with path.open(encoding="utf-8") as stream:
-            for raw in stream:
-                try:
-                    entry = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                if header is None and entry.get("type") == "session":
-                    header = entry
-                if entry.get("type") == "session_info":
-                    candidate = entry.get("name")
-                    if isinstance(candidate, str) and candidate.strip():
-                        name = candidate.strip()
-                elif entry.get("type") == "model_change":
-                    provider = str(entry.get("provider") or provider)
-                    model = str(entry.get("modelId") or model)
-                elif entry.get("type") == "thinking_level_change":
-                    thinking_level = str(entry.get("thinkingLevel") or "") or None
-                elif entry.get("type") == "message":
-                    message = entry.get("message")
-                    if isinstance(message, dict) and message.get("role") == "assistant":
-                        provider = str(message.get("provider") or provider)
-                        model = str(message.get("model") or model)
-                timestamp = entry.get("timestamp")
-                if isinstance(timestamp, str):
-                    updated_at = timestamp
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if header is None and entry.get("type") == "session":
+                header = entry
+            if entry.get("type") == "session_info":
+                name = str(entry.get("name") or name or "") or None
+            elif entry.get("type") == "model_change":
+                provider, model = (
+                    str(entry.get("provider") or provider),
+                    str(entry.get("modelId") or model),
+                )
+            elif entry.get("type") == "thinking_level_change":
+                thinking_level = str(entry.get("thinkingLevel") or "") or None
+            elif (
+                entry.get("type") == "message"
+                and isinstance(entry.get("message"), dict)
+                and entry["message"].get("role") == "assistant"
+            ):
+                provider, model = (
+                    str(entry["message"].get("provider") or provider),
+                    str(entry["message"].get("model") or model),
+                )
+            if isinstance(entry.get("timestamp"), str):
+                updated_at = entry["timestamp"]
     except OSError:
         return None
     if header is None or not isinstance(header.get("id"), str):
