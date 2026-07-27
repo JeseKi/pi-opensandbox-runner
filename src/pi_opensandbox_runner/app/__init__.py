@@ -56,6 +56,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="Pi OpenSandbox Runner",
         version="0.1.0",
+        description=(
+            "通过 HTTP 管理容器内的 Pi RPC Session、OpenSandbox 文件与命令。"
+            "除健康检查外，所有 `/v1` 接口均需要 `Authorization: Bearer <bridge-token>`。"
+            "`cwd` 是 Pi 初始工作目录，不是权限边界。"
+        ),
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -101,11 +106,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request,
         )
 
-    @app.get("/healthz")
+    @app.get("/healthz", summary="存活检查", description="无需认证；仅表示 bridge 进程存活。")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/readyz")
+    @app.get(
+        "/readyz",
+        summary="就绪检查",
+        description="无需认证；仅当 bridge 初始化完成时返回成功。",
+    )
     async def ready(request: Request) -> dict[str, str]:
         if not request.app.state.ready:
             raise ApiProblem(503, "not_ready", "bridge is not ready")

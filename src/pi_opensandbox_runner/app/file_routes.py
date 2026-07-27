@@ -13,21 +13,50 @@ from .problems import ApiProblem
 
 
 def register_file_routes(router: APIRouter, ctx: BridgeContext) -> None:
-    @router.get("/files")
+    @router.get(
+        "/files",
+        summary="列出目录内容",
+        description=(
+            "类似 ls；路径不受 workspace 限制，可访问 Pi 进程有权访问的任意容器路径。"
+            "depth 最大为 64。"
+        ),
+    )
     async def list_files(
-        path: str = "/root/workspace",
-        depth: Annotated[int, Query(ge=0, le=64)] = 1,
+        path: Annotated[
+            str, Query(description="要列出的绝对或相对容器目录路径。")
+        ] = "/root/workspace",
+        depth: Annotated[
+            int, Query(ge=0, le=64, description="递归深度，范围 0 至 64，默认 1。")
+        ] = 1,
     ) -> Response:
         return await ctx.execd_request(
             "GET", "/directories/list", params={"path": path, "depth": depth}
         )
 
-    @router.get("/files/content")
+    @router.get(
+        "/files/content",
+        summary="读取或下载文件",
+        description=(
+            "完整读取会返回强 ETag、文件大小和修改时间；将 ETag 用于条件保存或删除。"
+            "Range 与 offset/limit 不能同时使用。"
+        ),
+    )
     async def read_file(
-        path: str,
-        offset: Annotated[int | None, Query(ge=1)] = None,
-        limit: Annotated[int | None, Query(ge=1, le=100_000)] = None,
-        range_header: Annotated[str | None, Header(alias="Range")] = None,
+        path: Annotated[str, Query(description="容器内文件路径。")],
+        offset: Annotated[
+            int | None, Query(ge=1, description="文本浏览起始位置；不可与 Range 同用。")
+        ] = None,
+        limit: Annotated[
+            int | None,
+            Query(ge=1, le=100_000, description="最多读取的单位数；不可与 Range 同用。"),
+        ] = None,
+        range_header: Annotated[
+            str | None,
+            Header(
+                alias="Range",
+                description="标准 HTTP byte range；不可与 offset/limit 同用。",
+            ),
+        ] = None,
     ) -> Response:
         if range_header is not None and (offset is not None or limit is not None):
             raise ApiProblem(
@@ -63,10 +92,19 @@ def register_file_routes(router: APIRouter, ctx: BridgeContext) -> None:
             headers=response_headers,
         )
 
-    @router.delete("/files", status_code=204)
+    @router.delete(
+        "/files",
+        status_code=204,
+        summary="条件删除文件",
+        description=(
+            "必须提供完整读取时得到的 If-Match ETag。缺失返回 428，文件已变化返回 412。"
+        ),
+    )
     async def delete_file(
-        path: str,
-        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+        path: Annotated[str, Query(description="要删除的现有常规文件路径。")],
+        if_match: Annotated[
+            str | None, Header(alias="If-Match", description="完整读取响应中的强 ETag；必填。")
+        ] = None,
     ) -> Response:
         lock = await ctx.file_lock(path)
         async with lock:
@@ -75,11 +113,21 @@ def register_file_routes(router: APIRouter, ctx: BridgeContext) -> None:
             await ctx.execd_request("DELETE", "/files", params={"path": path})
         return Response(status_code=204)
 
-    @router.put("/files/content", status_code=204)
+    @router.put(
+        "/files/content",
+        status_code=204,
+        summary="条件保存纯文本文件",
+        description=(
+            "请求体必须是 text/plain UTF-8，且目标与新内容均不得超过 1 MiB、不得含 NUL。"
+            "必须提供 If-Match ETag；成功时以原子替换保存并返回新 ETag。"
+        ),
+    )
     async def update_text_file(
-        path: str,
+        path: Annotated[str, Query(description="要原子替换的现有常规文件路径。")],
         request: Request,
-        if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+        if_match: Annotated[
+            str | None, Header(alias="If-Match", description="完整读取响应中的强 ETag；必填。")
+        ] = None,
     ) -> Response:
         content_type = request.headers.get("content-type", "")
         if not content_type.lower().startswith("text/plain"):
@@ -142,11 +190,29 @@ def register_file_routes(router: APIRouter, ctx: BridgeContext) -> None:
                 raise
         return Response(status_code=204, headers={"ETag": ctx.file_etag(encoded_content)})
 
-    @router.post("/files/upload", status_code=201)
+    @router.post(
+        "/files/upload",
+        status_code=201,
+        summary="上传新文件",
+        description=(
+            "仅创建，不覆盖已有文件。必须使用 multipart/form-data 并带 If-None-Match: *；"
+            "path 可为目标文件，或以 / 结尾/现有目录来使用上传文件名。"
+        ),
+    )
     async def upload_file(
-        path: Annotated[str, Form(min_length=1, max_length=4096)],
-        file: Annotated[UploadFile, File()],
-        if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
+        path: Annotated[
+            str,
+            Form(
+                min_length=1,
+                max_length=4096,
+                description="新文件目标路径，或现有目录/以 / 结尾的目录。",
+            ),
+        ],
+        file: Annotated[UploadFile, File(description="要创建的文件内容。")],
+        if_none_match: Annotated[
+            str | None,
+            Header(alias="If-None-Match", description="必须精确为 *，以禁止覆盖。"),
+        ] = None,
     ) -> Response:
         if if_none_match != "*":
             raise ApiProblem(

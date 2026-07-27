@@ -124,7 +124,10 @@ async def test_docs_use_the_opensandbox_proxy_prefix(client: AsyncClient) -> Non
     assert schema.json()["paths"]["/v1/sessions"]["get"]["security"] == [
         {"HTTPBearer": []}
     ]
-    assert "/v1/sessions/{session_id}/system-prompt" in schema.json()["paths"]
+    system_prompt_path = schema.json()["paths"]["/v1/sessions/{session_id}/system-prompt"]
+    assert system_prompt_path["put"]["summary"] == "更新 Session system prompt"
+    assert "409 session_streaming" in system_prompt_path["put"]["description"]
+    assert schema.json()["paths"]["/v1/files/content"]["put"]["summary"] == "条件保存纯文本文件"
 
 
 @pytest.mark.asyncio
