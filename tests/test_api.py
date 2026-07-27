@@ -58,10 +58,19 @@ async def test_auth_and_session_lifecycle(client: AsyncClient, tmp_path: Path) -
 
     accepted = await client.post(
         f"/v1/sessions/{session_id}/prompts",
-        json={"message": "hello"},
+        json={
+            "message": "hello",
+            "provider": "alternate-provider",
+            "model": "alternate-model",
+            "thinking_level": "high",
+        },
     )
     assert accepted.status_code == 202
     assert accepted.json()["delivery"] == "prompt"
+    updated = await client.get(f"/v1/sessions/{session_id}")
+    assert updated.json()["provider"] == "alternate-provider"
+    assert updated.json()["model"] == "alternate-model"
+    assert updated.json()["thinking_level"] == "high"
 
     entries = await client.get(f"/v1/sessions/{session_id}/entries", params={"limit": 1})
     assert entries.status_code == 200
@@ -124,6 +133,12 @@ async def test_validation_listing_and_event_replay(client: AsyncClient) -> None:
     )
     assert bad_model.status_code == 422
     assert bad_model.headers["content-type"].startswith("application/problem+json")
+
+    bad_prompt_model = await client.post(
+        "/v1/sessions/not-a-real-session/prompts",
+        json={"message": "bad", "model": "fake-model"},
+    )
+    assert bad_prompt_model.status_code == 422
 
     first = await client.post("/v1/sessions", json={"name": "one"})
     second = await client.post("/v1/sessions", json={"name": "two"})

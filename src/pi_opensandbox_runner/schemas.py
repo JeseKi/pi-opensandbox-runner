@@ -69,6 +69,9 @@ class SessionPage(BaseModel):
 class PromptCreate(BaseModel):
     message: str = Field(min_length=1, max_length=100_000)
     delivery: DeliveryMode = "auto"
+    provider: str | None = Field(default=None, min_length=1, max_length=80)
+    model: str | None = Field(default=None, min_length=1, max_length=240)
+    thinking_level: ThinkingLevel | None = None
 
     @field_validator("message")
     @classmethod
@@ -77,11 +80,34 @@ class PromptCreate(BaseModel):
             raise ValueError("message cannot be blank")
         return value
 
+    @model_validator(mode="after")
+    def paired_model(self) -> PromptCreate:
+        if (self.provider is None) != (self.model is None):
+            raise ValueError("provider and model must be supplied together")
+        return self
+
 
 class PromptAccepted(BaseModel):
     command_id: str
     session_id: str
     delivery: Literal["prompt", "steer", "follow_up"]
+
+
+class CommandCreate(BaseModel):
+    command: str = Field(min_length=1, max_length=100_000)
+    cwd: str | None = Field(default=None, min_length=1, max_length=4096)
+    timeout: int | None = Field(default=None, ge=1, le=86_400_000)
+    background: bool = False
+    envs: dict[str, str] | None = None
+    uid: int | None = Field(default=None, ge=0)
+    gid: int | None = Field(default=None, ge=0)
+
+    @field_validator("command")
+    @classmethod
+    def clean_command(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("command cannot be blank")
+        return value
 
 
 class EntryPage(BaseModel):

@@ -12,6 +12,7 @@ class Settings:
     pi_session_dir: Path = Path("/root/.pi/agent/sessions")
     workspace_root: Path = Path("/root/workspace")
     pi_executable: str = "pi"
+    execd_url: str = "http://127.0.0.1:44772"
     default_provider: str | None = None
     default_model: str | None = None
     max_active_sessions: int = 4
@@ -34,6 +35,7 @@ class Settings:
             ),
             workspace_root=Path(os.getenv("PI_WORKSPACE_ROOT", "/root/workspace")),
             pi_executable=os.getenv("PI_EXECUTABLE", "pi"),
+            execd_url=os.getenv("OPENSANDBOX_EXECD_URL", "http://127.0.0.1:44772"),
             default_provider=os.getenv("PI_DEFAULT_PROVIDER") or None,
             default_model=os.getenv("PI_DEFAULT_MODEL") or None,
             max_active_sessions=int(os.getenv("PI_MAX_ACTIVE_SESSIONS", "4")),

@@ -9,7 +9,19 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -17,6 +29,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .catalog import Catalog, SessionRecord
 from .config import Settings
+from .execd import ExecdClient, ExecdError
 from .journal import EventCursorExpired, EventJournal
 from .rpc import (
     PiRpcProcess,
@@ -26,6 +39,7 @@ from .rpc import (
     SessionSupervisor,
 )
 from .schemas import (
+    CommandCreate,
     EntryPage,
     PromptAccepted,
     PromptCreate,
@@ -81,6 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         segment_count=resolved.event_segment_count,
     )
     supervisor = SessionSupervisor(resolved, catalog, journal)
+    execd = ExecdClient(resolved.execd_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -93,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             app.state.ready = False
             await supervisor.close()
+            await execd.close()
 
     app = FastAPI(
         title="Pi OpenSandbox Runner",
@@ -105,6 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.catalog = catalog
     app.state.journal = journal
     app.state.supervisor = supervisor
+    app.state.execd = execd
     app.state.ready = False
 
     # OpenSandbox may expose the bridge through either its direct ingress or
@@ -178,6 +195,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if record is None:
             raise ApiProblem(404, "session_not_found", "session does not exist")
         return record
+
+    async def execd_request(
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        files: Any | None = None,
+    ) -> Response:
+        try:
+            upstream = await execd.request(
+                method, path, params=params, json=json, headers=headers, files=files
+            )
+        except ExecdError as exc:
+            raise ApiProblem(exc.status_code, "execd_request_failed", exc.detail) from exc
+        response_headers = {
+            name: value
+            for name in ("content-disposition", "content-range", "execd-commands-tail-cursor")
+            if (value := upstream.headers.get(name)) is not None
+        }
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=response_headers,
+        )
 
     @router.post("/sessions", response_model=SessionOut, status_code=201)
     async def create_session(payload: SessionCreate) -> SessionOut:
@@ -300,6 +344,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             "session_not_streaming",
                             f"{delivery} requires a running agent turn",
                         )
+                if payload.provider is not None and payload.model is not None:
+                    await process.request(
+                        {
+                            "type": "set_model",
+                            "provider": payload.provider,
+                            "modelId": payload.model,
+                        }
+                    )
+                    await catalog.update_model_settings(
+                        session_id,
+                        provider=payload.provider,
+                        model=payload.model,
+                    )
+                if payload.thinking_level is not None:
+                    await process.request(
+                        {"type": "set_thinking_level", "level": payload.thinking_level}
+                    )
+                    await catalog.update_model_settings(
+                        session_id,
+                        thinking_level=payload.thinking_level,
+                        update_thinking_level=True,
+                    )
                 command_type = "follow_up" if delivery == "follow_up" else delivery
                 await process.request(
                     {
@@ -328,6 +394,116 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session_id=session_id,
             delivery=delivery,
         )
+
+    @router.get("/files")
+    async def list_files(
+        path: str = "/root/workspace",
+        depth: Annotated[int, Query(ge=0, le=64)] = 1,
+    ) -> Response:
+        """List a directory, like ``ls``; depth 1 returns immediate children."""
+        return await execd_request(
+            "GET", "/directories/list", params={"path": path, "depth": depth}
+        )
+
+    @router.get("/files/content")
+    async def read_file(
+        path: str,
+        offset: Annotated[int | None, Query(ge=1)] = None,
+        limit: Annotated[int | None, Query(ge=1, le=100_000)] = None,
+        range_header: Annotated[str | None, Header(alias="Range")] = None,
+    ) -> Response:
+        """Read or download a file; offset/limit select a range of text lines."""
+        if range_header is not None and (offset is not None or limit is not None):
+            raise ApiProblem(
+                422,
+                "invalid_file_range",
+                "Range cannot be combined with offset or limit",
+            )
+        params: dict[str, Any] = {"path": path}
+        if offset is not None:
+            params["offset"] = offset
+        if limit is not None:
+            params["limit"] = limit
+        headers = {"Range": range_header} if range_header is not None else None
+        return await execd_request("GET", "/files/download", params=params, headers=headers)
+
+    @router.delete("/files", status_code=204)
+    async def delete_file(path: str) -> Response:
+        """Delete one file; directory deletion is intentionally not exposed here."""
+        await execd_request("DELETE", "/files", params={"path": path})
+        return Response(status_code=204)
+
+    @router.post("/files/upload", status_code=201)
+    async def upload_file(
+        path: Annotated[str, Form(min_length=1, max_length=4096)],
+        file: Annotated[UploadFile, File()],
+    ) -> Response:
+        """Upload one file to a path, or use its original name in a target directory."""
+        destination = path
+        if path.endswith("/"):
+            destination = str(Path(path) / Path(file.filename or "upload").name)
+        else:
+            try:
+                info_response = await execd.request("GET", "/files/info", params={"path": path})
+            except ExecdError as exc:
+                if exc.status_code != 404:
+                    raise ApiProblem(exc.status_code, "execd_request_failed", exc.detail) from exc
+            else:
+                info = info_response.json()
+                entry = info.get(path) if isinstance(info, dict) else None
+                if isinstance(entry, dict) and entry.get("type") == "directory":
+                    destination = str(Path(path) / Path(file.filename or "upload").name)
+        metadata = json.dumps({"path": destination}, separators=(",", ":"))
+        files = {
+            # Execd parses metadata as a multipart file part, not a normal
+            # text field, so it must carry a filename.
+            "metadata": ("metadata.json", metadata, "application/json"),
+            "file": (
+                file.filename or "upload",
+                file.file,
+                file.content_type or "application/octet-stream",
+            ),
+        }
+        return await execd_request("POST", "/files/upload", files=files)
+
+    @router.post("/commands")
+    async def run_command(payload: CommandCreate) -> Response:
+        """Execute a shell command through Execd and return its SSE output."""
+        try:
+            upstream = await execd.stream(
+                "POST", "/command", json=payload.model_dump(exclude_none=True)
+            )
+        except ExecdError as exc:
+            raise ApiProblem(exc.status_code, "execd_request_failed", exc.detail) from exc
+
+        async def body() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+
+        return StreamingResponse(
+            body(),
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type", "text/event-stream"),
+        )
+
+    @router.delete("/commands/{command_id}", status_code=202)
+    async def abort_command(command_id: str) -> Response:
+        return await execd_request("DELETE", "/command", params={"id": command_id})
+
+    @router.get("/commands/{command_id}")
+    async def command_status(command_id: str) -> Response:
+        return await execd_request("GET", f"/command/status/{command_id}")
+
+    @router.get("/commands/{command_id}/logs")
+    async def command_logs(
+        command_id: str,
+        cursor: Annotated[int | None, Query(ge=0)] = None,
+    ) -> Response:
+        params = {"cursor": cursor} if cursor is not None else None
+        return await execd_request("GET", f"/command/{command_id}/logs", params=params)
 
     @router.post("/sessions/{session_id}/abort", status_code=202)
     async def abort(session_id: str) -> dict[str, str]:

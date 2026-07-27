@@ -153,6 +153,36 @@ class Catalog:
         assert row is not None
         return self._record(row)
 
+    async def update_model_settings(
+        self,
+        session_id: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        thinking_level: str | None = None,
+        update_thinking_level: bool = False,
+    ) -> SessionRecord | None:
+        """Persist the model state selected through Pi RPC for later resumes."""
+        fields: list[str] = ["updated_at = ?"]
+        values: list[str | None] = [utc_now()]
+        if provider is not None and model is not None:
+            fields.extend(["provider = ?", "model = ?"])
+            values.extend([provider, model])
+        if update_thinking_level:
+            fields.append("thinking_level = ?")
+            values.append(thinking_level)
+        values.append(session_id)
+        async with self._lock:
+            with self._connect() as db:
+                result = db.execute(
+                    f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?", values
+                )
+                if result.rowcount == 0:
+                    return None
+                row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        assert row is not None
+        return self._record(row)
+
     async def set_runtime(
         self,
         session_id: str,

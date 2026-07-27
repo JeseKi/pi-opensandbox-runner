@@ -93,6 +93,11 @@ for line in sys.stdin:
         if session_file.exists():
             persist()
         respond(command)
+    elif command_type == "set_model":
+        provider = command["provider"]
+        model = command["modelId"]
+        persist()
+        respond(command)
     elif command_type in {"set_thinking_level", "abort"}:
         respond(command)
     elif command_type in {"prompt", "steer", "follow_up"}:

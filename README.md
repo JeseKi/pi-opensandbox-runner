@@ -173,11 +173,63 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/prompts" \
 使用 `follow_up`。也可显式使用 `steer` 或 `follow_up`；若当前没有活动 turn，会返回
 `409`。
 
+可以在发送时切换本次及后续 session 使用的模型与思考强度；`provider` 和 `model`
+必须同时提供，`thinking_level` 可单独指定。切换会先通过 Pi RPC 生效，再发送 prompt，并
+写入 session 元数据，因此停止后恢复 session 时仍会沿用该设置。
+
+```bash
+curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/prompts" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{
+    "message":"用新的模型继续分析",
+    "provider":"deepseek",
+    "model":"deepseek-v4-flash",
+    "thinking_level":"off"
+  }' | jq
+```
+
+具体可用的模型和支持的思考等级取决于 Pi 已配置的 provider/model；不支持时 Pi 会拒绝请求。
+
 其他控制命令：
 
 ```bash
 curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/abort" -H "$AUTH"
 curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/stop" -H "$AUTH"
+```
+
+### 文件浏览与命令执行
+
+这些接口同样使用 bridge Bearer token，内部经由 OpenSandbox Execd 调用，不会公开 Execd
+端口。路径不受 workspace 限制，可访问容器内任意 Pi 进程有权访问的路径。
+
+```bash
+# 类似 ls：默认只返回直接子项；提高 depth 可递归浏览
+curl -sS "${BRIDGE_URL}/v1/files?path=/root/workspace&depth=1" -H "$AUTH" | jq
+
+# 浏览文本文件第 20 至 69 行；不传 offset/limit 则作为二进制文件下载
+curl -sS "${BRIDGE_URL}/v1/files/content?path=/root/workspace/README.md&offset=20&limit=50" \
+  -H "$AUTH"
+
+# 上传本地文件。path 可为完整目标文件路径，也可为已存在目录（自动使用原文件名）。
+curl -sS -X POST "${BRIDGE_URL}/v1/files/upload" -H "$AUTH" \
+  -F 'path=/root/workspace/' \
+  -F 'file=@./input.csv'
+
+# 删除单个文件（不支持删除目录）
+curl -sS -X DELETE "${BRIDGE_URL}/v1/files?path=/root/workspace/input.csv" -H "$AUTH"
+
+# 执行命令。前台命令返回 Execd 的 SSE 输出；background=true 后可查询状态和日志。
+curl -N -X POST "${BRIDGE_URL}/v1/commands" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"command":"ls -la /root/workspace","cwd":"/root/workspace","timeout":30000}'
+```
+
+后台命令返回的 command ID 可用于：
+
+```bash
+curl -sS "${BRIDGE_URL}/v1/commands/${COMMAND_ID}" -H "$AUTH" | jq
+curl -sS "${BRIDGE_URL}/v1/commands/${COMMAND_ID}/logs" -H "$AUTH"
+curl -X DELETE "${BRIDGE_URL}/v1/commands/${COMMAND_ID}" -H "$AUTH"
 ```
 
 `stop` 只停止 Pi RPC 子进程，不删除 session。下次发送 prompt 会从 JSONL 文件自动
