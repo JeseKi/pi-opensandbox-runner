@@ -1,5 +1,8 @@
 .runtime/
 .venv/
+.env
+.env.*
+!.env.example
 __pycache__/
 .mypy_cache/
 .pytest_cache/
@@ -9,3 +12,4 @@ build/
 dist/
 wheels/
 *.egg-info
+*.env

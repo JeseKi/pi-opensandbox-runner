@@ -28,18 +28,18 @@ Pi 以 root 运行，可以直接读写容器内其他目录。
 
 要求：Linux Docker、Docker Compose、`bash`、`curl`、`jq`、`openssl`。
 
-先准备模型供应商环境变量，例如：
+先从示例准备模型供应商环境变量：
 
-```dotenv
-# provider.env
-ANTHROPIC_API_KEY=...
+```bash
+cp .env.example .env
 ```
 
-启动一个名为 `alice` 的完整实例：
+编辑 `.env`，只取消所用供应商变量的注释并填写密钥。然后启动一个名为 `alice` 的完整
+实例：
 
 ```bash
 ./scripts/up.sh alice \
-  --env-file ./provider.env \
+  --env-file ./.env \
   --provider anthropic \
   --model claude-sonnet-4-20250514
 ```
@@ -51,7 +51,7 @@ ANTHROPIC_API_KEY=...
 ```bash
 ./scripts/up.sh alice \
   --mirror-mode cn \
-  --env-file ./provider.env \
+  --env-file ./.env \
   --provider anthropic \
   --model claude-sonnet-4-20250514
 ```
@@ -75,7 +75,7 @@ ANTHROPIC_API_KEY=...
 ```bash
 ./scripts/up.sh alice \
   --show-token \
-  --env-file ./provider.env \
+  --env-file ./.env \
   --provider anthropic \
   --model claude-sonnet-4-20250514
 ```
@@ -85,7 +85,7 @@ ANTHROPIC_API_KEY=...
 ```bash
 ./scripts/status.sh alice
 ./scripts/down.sh alice
-./scripts/up.sh alice --env-file ./provider.env \
+./scripts/up.sh alice --env-file ./.env \
   --provider anthropic --model claude-sonnet-4-20250514
 ```
 
@@ -226,7 +226,7 @@ OpenSandbox egress policy JSON：
 
 ```bash
 ./scripts/up.sh alice \
-  --env-file ./provider.env \
+  --env-file ./.env \
   --provider anthropic \
   --model claude-sonnet-4-20250514 \
   --network-policy ./network-policy.json
