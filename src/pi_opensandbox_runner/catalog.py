@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
-from sqlalchemy import Integer, String, Text, and_, create_engine, event, or_, select
+from sqlalchemy import ForeignKey, Integer, String, Text, and_, create_engine, event, or_, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 _Result = TypeVar("_Result")
@@ -40,6 +40,28 @@ class SessionModel(Base):
     event_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class McpServerModel(Base):
+    __tablename__ = "mcp_servers"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    transport: Mapped[str] = mapped_column(String, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    headers_template: Mapped[str] = mapped_column(Text, nullable=False)
+    request_timeout_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+
+class SessionMcpServerModel(Base):
+    __tablename__ = "session_mcp_servers"
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    server_id: Mapped[str] = mapped_column(
+        ForeignKey("mcp_servers.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
 @dataclass(frozen=True)
 class SessionRecord:
     id: str
@@ -58,8 +80,35 @@ class SessionRecord:
     event_seq: int
 
 
+@dataclass(frozen=True)
+class McpServerRecord:
+    id: str
+    name: str
+    transport: str
+    url: str
+    headers_template: dict[str, str]
+    request_timeout_ms: int
+    created_at: str
+    updated_at: str
+
+
 def _record(item: SessionModel) -> SessionRecord:
     return SessionRecord(**{key: getattr(item, key) for key in SessionRecord.__dataclass_fields__})
+
+
+def _mcp_record(item: McpServerModel) -> McpServerRecord:
+    raw_headers = json.loads(item.headers_template)
+    headers = raw_headers if isinstance(raw_headers, dict) else {}
+    return McpServerRecord(
+        id=item.id,
+        name=item.name,
+        transport=item.transport,
+        url=item.url,
+        headers_template={str(key): str(value) for key, value in headers.items()},
+        request_timeout_ms=item.request_timeout_ms,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
 
 
 class Catalog:
@@ -251,8 +300,128 @@ class Catalog:
             if item is None:
                 return None
             result = _record(item)
+            for binding in db.scalars(
+                select(SessionMcpServerModel).where(SessionMcpServerModel.session_id == session_id)
+            ):
+                db.delete(binding)
             db.delete(item)
             return result
+
+        return await self._run(operation)
+
+    async def create_mcp_server(
+        self,
+        *,
+        server_id: str,
+        name: str,
+        transport: str,
+        url: str,
+        headers_template: dict[str, str],
+        request_timeout_ms: int,
+    ) -> McpServerRecord:
+        now = utc_now()
+
+        def operation(db: Session) -> McpServerRecord:
+            item = McpServerModel(
+                id=server_id,
+                name=name,
+                transport=transport,
+                url=url,
+                headers_template=json.dumps(
+                    headers_template, sort_keys=True, separators=(",", ":")
+                ),
+                request_timeout_ms=request_timeout_ms,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(item)
+            db.flush()
+            return _mcp_record(item)
+
+        return await self._run(operation)
+
+    async def get_mcp_server(self, server_id: str) -> McpServerRecord | None:
+        return await self._run(
+            lambda db: (
+                None
+                if (item := db.get(McpServerModel, server_id)) is None
+                else _mcp_record(item)
+            )
+        )
+
+    async def list_mcp_servers(self) -> list[McpServerRecord]:
+        return await self._run(
+            lambda db: [
+                _mcp_record(item)
+                for item in db.scalars(select(McpServerModel).order_by(McpServerModel.name))
+            ]
+        )
+
+    async def update_mcp_server(self, server_id: str, **values: Any) -> McpServerRecord | None:
+        def operation(db: Session) -> McpServerRecord | None:
+            item = db.get(McpServerModel, server_id)
+            if item is None:
+                return None
+            if "headers_template" in values:
+                values["headers_template"] = json.dumps(
+                    values["headers_template"], sort_keys=True, separators=(",", ":")
+                )
+            for key, value in values.items():
+                setattr(item, key, value)
+            item.updated_at = utc_now()
+            db.flush()
+            return _mcp_record(item)
+
+        return await self._run(operation)
+
+    async def delete_mcp_server(self, server_id: str) -> bool | None:
+        def operation(db: Session) -> bool | None:
+            item = db.get(McpServerModel, server_id)
+            if item is None:
+                return None
+            linked = db.scalar(
+                select(SessionMcpServerModel.session_id).where(
+                    SessionMcpServerModel.server_id == server_id
+                )
+            )
+            if linked is not None:
+                return False
+            db.delete(item)
+            return True
+
+        return await self._run(operation)
+
+    async def set_session_mcp_servers(
+        self, session_id: str, server_ids: list[str]
+    ) -> list[McpServerRecord] | None:
+        def operation(db: Session) -> list[McpServerRecord] | None:
+            if db.get(SessionModel, session_id) is None:
+                return None
+            items = [db.get(McpServerModel, server_id) for server_id in server_ids]
+            if any(item is None for item in items):
+                raise KeyError("mcp server does not exist")
+            for binding in db.scalars(
+                select(SessionMcpServerModel).where(SessionMcpServerModel.session_id == session_id)
+            ):
+                db.delete(binding)
+            for server_id in server_ids:
+                db.add(SessionMcpServerModel(session_id=session_id, server_id=server_id))
+            db.flush()
+            return [_mcp_record(item) for item in items if item is not None]
+
+        return await self._run(operation)
+
+    async def get_session_mcp_servers(self, session_id: str) -> list[McpServerRecord] | None:
+        def operation(db: Session) -> list[McpServerRecord] | None:
+            if db.get(SessionModel, session_id) is None:
+                return None
+            stmt = (
+                select(McpServerModel)
+                .join(SessionMcpServerModel, SessionMcpServerModel.server_id == McpServerModel.id)
+                .where(SessionMcpServerModel.session_id == session_id)
+                .order_by(McpServerModel.name)
+            )
+            return [_mcp_record(item) for item in db.scalars(stmt)]
 
         return await self._run(operation)
 
@@ -263,13 +432,20 @@ class Catalog:
                 continue
             existing = await self.get(str(parsed["id"]))
             if existing is None:
-                await self.create(
+                created = await self.create(
                     session_id=str(parsed["id"]),
                     name=str(parsed["name"]),
                     cwd=str(parsed["cwd"]),
                     provider=str(parsed["provider"]),
                     model=str(parsed["model"]),
                     thinking_level=parsed["thinking_level"],
+                )
+                await self.set_runtime(
+                    created.id,
+                    status=created.last_status,
+                    error=created.last_error,
+                    session_file=str(path),
+                    touch=False,
                 )
             elif existing.session_file != str(path):
                 await self.set_runtime(

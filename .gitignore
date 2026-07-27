@@ -13,3 +13,4 @@ dist/
 wheels/
 *.egg-info
 *.env
+extensions/pi-runner-mcp/node_modules/

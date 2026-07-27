@@ -14,6 +14,7 @@ from typing import Any
 from .catalog import Catalog, SessionRecord
 from .config import Settings
 from .journal import EventJournal
+from .mcp import McpRuntimeConfig, build_runtime_config, missing_environment, write_runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,12 @@ class RpcError(RuntimeError):
 
 class RpcProcessExited(RpcError):
     pass
+
+
+class McpEnvironmentMissing(RpcError):
+    def __init__(self, names: list[str]):
+        self.names = names
+        super().__init__(f"missing MCP environment variables: {', '.join(names)}")
 
 
 class SessionCapacityExceeded(RpcError):
@@ -42,6 +49,7 @@ class PiRpcProcess:
         process: asyncio.subprocess.Process,
         timeout: float,
         system_prompt_config: tuple[str | None, str],
+        mcp_config_fingerprint: str,
         on_event: EventHandler,
         on_exit: ExitHandler,
     ):
@@ -49,6 +57,7 @@ class PiRpcProcess:
         self.process = process
         self.timeout = timeout
         self.system_prompt_config = system_prompt_config
+        self.mcp_config_fingerprint = mcp_config_fingerprint
         self.on_event = on_event
         self.on_exit = on_exit
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -65,6 +74,7 @@ class PiRpcProcess:
         record: SessionRecord,
         settings: Settings,
         *,
+        mcp_config: McpRuntimeConfig,
         on_event: EventHandler,
         on_exit: ExitHandler,
     ) -> PiRpcProcess:
@@ -100,9 +110,16 @@ class PiRpcProcess:
                 else "--append-system-prompt"
             )
             args.extend([prompt_flag, record.system_prompt])
+        config_path: Path | None = None
+        if mcp_config.contents != '{"mcpServers":{}}':
+            config_path = settings.state_root / "mcp" / f"{record.id}.json"
+            write_runtime_config(config_path, mcp_config)
+            args.extend(["--extension", "/opt/pi-runner-mcp/src/index.ts"])
         environment = os.environ.copy()
         environment["HOME"] = "/root"
         environment["PI_CODING_AGENT_SESSION_DIR"] = str(settings.pi_session_dir)
+        if config_path is not None:
+            environment["PI_RUNNER_MCP_CONFIG"] = str(config_path)
         process = await asyncio.create_subprocess_exec(
             *args,
             cwd=cwd,
@@ -117,6 +134,7 @@ class PiRpcProcess:
             process=process,
             timeout=settings.rpc_timeout_seconds,
             system_prompt_config=(record.system_prompt, record.system_prompt_mode),
+            mcp_config_fingerprint=mcp_config.fingerprint,
             on_event=on_event,
             on_exit=on_exit,
         )
@@ -274,12 +292,15 @@ class SessionSupervisor:
         process = self.processes.get(session_id)
         return process if process is not None and process.alive else None
 
-    def needs_system_prompt_restart(self, record: SessionRecord) -> bool:
+    async def needs_configuration_restart(self, record: SessionRecord) -> bool:
         process = self.active(record.id)
-        return process is not None and process.system_prompt_config != (
-            record.system_prompt,
-            record.system_prompt_mode,
-        )
+        if process is None:
+            return False
+        if process.system_prompt_config != (record.system_prompt, record.system_prompt_mode):
+            return True
+        servers = await self.catalog.get_session_mcp_servers(record.id)
+        assert servers is not None
+        return process.mcp_config_fingerprint != build_runtime_config(servers).fingerprint
 
     async def get_or_start(self, record: SessionRecord) -> PiRpcProcess:
         async with self._session_lock(record.id):
@@ -288,6 +309,12 @@ class SessionSupervisor:
                 return current
             await self._reserve_capacity()
             await self.catalog.set_runtime(record.id, status="starting", error=None)
+            servers = await self.catalog.get_session_mcp_servers(record.id)
+            assert servers is not None
+            mcp_config = build_runtime_config(servers)
+            if missing := missing_environment(mcp_config):
+                await self.catalog.set_runtime(record.id, status="stopped", error=None)
+                raise McpEnvironmentMissing(missing)
 
             async def on_event(event: dict[str, Any]) -> None:
                 await self.journal.append(record.id, "pi", event)
@@ -304,6 +331,7 @@ class SessionSupervisor:
                 process = await PiRpcProcess.start(
                     record,
                     self.settings,
+                    mcp_config=mcp_config,
                     on_event=on_event,
                     on_exit=on_exit,
                 )

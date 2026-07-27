@@ -3,11 +3,11 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ..catalog import SessionRecord
 from ..rpc import PiRpcProcess, RpcError, SessionSupervisor
-from ..schemas import SessionOut
+from ..schemas import SessionOut, SystemPromptMode
 from .problems import ApiProblem
 
 
@@ -83,7 +83,7 @@ async def session_out(record: SessionRecord, supervisor: SessionSupervisor) -> S
         model=record.model,
         thinking_level=record.thinking_level,
         system_prompt=record.system_prompt,
-        system_prompt_mode=record.system_prompt_mode,
+        system_prompt_mode=cast(SystemPromptMode, record.system_prompt_mode),
         session_file=record.session_file,
         materialized=materialized,
         state=state,

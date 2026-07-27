@@ -78,6 +78,9 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s \
         /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js \
         /usr/local/bin/pi
+COPY extensions/pi-runner-mcp/package.json extensions/pi-runner-mcp/package-lock.json /opt/pi-runner-mcp/
+RUN npm ci --prefix /opt/pi-runner-mcp --omit=dev --ignore-scripts --no-audit --no-fund
+COPY extensions/pi-runner-mcp/src /opt/pi-runner-mcp/src
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project

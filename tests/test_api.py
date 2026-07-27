@@ -128,6 +128,11 @@ async def test_docs_use_the_opensandbox_proxy_prefix(client: AsyncClient) -> Non
     assert system_prompt_path["put"]["summary"] == "更新 Session system prompt"
     assert "409 session_streaming" in system_prompt_path["put"]["description"]
     assert schema.json()["paths"]["/v1/files/content"]["put"]["summary"] == "条件保存纯文本文件"
+    assert schema.json()["paths"]["/v1/sessions"]["get"]["tags"] == ["Sessions"]
+    assert schema.json()["paths"]["/v1/sessions/{session_id}/events"]["get"]["tags"] == [
+        "Session runtime"
+    ]
+    assert schema.json()["paths"]["/v1/mcp/servers"]["get"]["tags"] == ["MCP"]
 
 
 @pytest.mark.asyncio
@@ -169,6 +174,64 @@ async def test_validation_listing_and_event_replay(client: AsyncClient) -> None:
         headers={"Last-Event-ID": "not-an-integer"},
     )
     assert bad_event_cursor.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_crud_and_session_binding(client: AsyncClient) -> None:
+    rejected_header = await client.post(
+        "/v1/mcp/servers",
+        json={
+            "name": "bad-header",
+            "url": "https://mcp.example.test/mcp",
+            "headers": {"Authorization": "Bearer ${BRIDGE_API_TOKEN}"},
+        },
+    )
+    assert rejected_header.status_code == 422
+
+    created = await client.post(
+        "/v1/mcp/servers",
+        json={
+            "name": "docs",
+            "url": "https://mcp.example.test/mcp",
+            "headers": {"Authorization": "Bearer ${MCP_DOCS_TOKEN}"},
+        },
+    )
+    assert created.status_code == 201
+    server = created.json()
+    assert server["headers"] == {"Authorization": "Bearer ${MCP_DOCS_TOKEN}"}
+
+    insecure = await client.post(
+        "/v1/mcp/servers",
+        json={"name": "insecure", "url": "http://mcp.example.test/mcp"},
+    )
+    assert insecure.status_code == 422
+    assert insecure.json()["code"] == "insecure_mcp_url"
+
+    session = await client.post("/v1/sessions", json={"name": "with-mcp"})
+    session_id = session.json()["id"]
+    bound = await client.put(
+        f"/v1/sessions/{session_id}/mcp-servers",
+        json={"server_ids": [server["id"]]},
+    )
+    assert bound.status_code == 200
+    assert [item["id"] for item in bound.json()["items"]] == [server["id"]]
+
+    unavailable = await client.post(
+        f"/v1/sessions/{session_id}/prompts", json={"message": "use MCP"}
+    )
+    assert unavailable.status_code == 422
+    assert unavailable.json()["code"] == "mcp_environment_missing"
+    assert unavailable.json()["missing"] == ["MCP_DOCS_TOKEN"]
+
+    deleting_bound = await client.delete(f"/v1/mcp/servers/{server['id']}")
+    assert deleting_bound.status_code == 409
+
+    unbound = await client.put(
+        f"/v1/sessions/{session_id}/mcp-servers", json={"server_ids": []}
+    )
+    assert unbound.status_code == 200
+    assert unbound.json()["items"] == []
+    assert (await client.delete(f"/v1/mcp/servers/{server['id']}")).status_code == 204
 
 
 @pytest.mark.asyncio

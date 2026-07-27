@@ -207,6 +207,54 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/prompts" \
 
 具体可用的模型和支持的思考等级取决于 Pi 已配置的 provider/model；不支持时 Pi 会拒绝请求。
 
+### 外部 MCP
+
+Pi 本身通过内置 Extension 使用 MCP。首期支持远程 Streamable HTTP 与兼容 SSE；不支持
+stdio、浏览器 OAuth、MCP resources/prompts/sampling。MCP Server 可在同一容器中复用，再按
+Session 绑定。工具会以 `mcp_<server>_<tool>` 注册到 Pi，并和普通 Pi tool call 一样出现在
+session entries 与 SSE 事件中。
+
+认证值不经 API 保存。先在 `.env` 中配置 `MCP_*` 变量后重新拉起 sandbox，例如：
+
+```dotenv
+MCP_CONTEXT7_TOKEN=replace-me
+```
+
+然后创建一个 MCP Server。Header 模板只能引用 `MCP_*` 变量，因此不会读取 bridge token 或
+模型供应商 token，GET 响应也只会返回模板而非展开后的值：
+
+```bash
+MCP_SERVER_ID="$(curl -sS -X POST "${BRIDGE_URL}/v1/mcp/servers" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{
+    "name":"context7",
+    "transport":"streamable_http",
+    "url":"https://mcp.context7.com/mcp",
+    "headers":{"Authorization":"Bearer ${MCP_CONTEXT7_TOKEN}"}
+  }' | jq -r .id)"
+
+curl -sS -X POST "${BRIDGE_URL}/v1/sessions" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"with-context7\",\"mcp_server_ids\":[\"${MCP_SERVER_ID}\"]}" | jq
+```
+
+也可以绑定已存在的 Session，`PUT` 是完整替换，空数组表示解绑全部：
+
+```bash
+curl -sS -X PUT "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/mcp-servers" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"server_ids\":[\"${MCP_SERVER_ID}\"]}" | jq
+```
+
+修改绑定时 Pi 正在生成会返回 `409 session_streaming`；否则新配置在下一条 prompt 前通过重启
+idle Pi 生效。更新 Server 定义不会中断运行中的 Pi，所有已绑定 Session 会在下一条非流式
+prompt 前使用新快照。若缺少 Header 模板引用的环境变量，prompt 返回
+`422 mcp_environment_missing`。正在被绑定的 Server 不能删除，需先解绑。
+
+默认 MCP URL 必须为 HTTPS。仅在可信内网开发服务确实使用 HTTP 时，才在 `.env` 设置
+`MCP_ALLOW_INSECURE_HTTP=1` 后重建 sandbox。通过 OpenSandbox `networkPolicy` 限制出网时，
+还需允许 MCP 域名、DNS 与模型供应商域名。
+
 其他控制命令：
 
 ```bash

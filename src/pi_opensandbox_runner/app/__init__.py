@@ -19,6 +19,7 @@ from ..rpc import SessionSupervisor
 from .command_routes import register_command_routes
 from .context import BridgeContext
 from .file_routes import register_file_routes
+from .mcp_routes import register_mcp_routes
 from .problems import ApiProblem, problem_response
 from .session_routes import register_session_routes
 from .session_runtime_routes import register_session_runtime_routes
@@ -64,6 +65,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
+        openapi_tags=[
+            {"name": "Health", "description": "Bridge 存活与就绪状态。"},
+            {"name": "Sessions", "description": "Pi Session 的创建、配置、历史与 prompt。"},
+            {"name": "Session runtime", "description": "运行中的 Pi 控制、上下文和 SSE 事件。"},
+            {"name": "MCP", "description": "远程 MCP Server 注册表与 Session 绑定。"},
+            {"name": "Files", "description": "通过 OpenSandbox Execd 浏览和修改容器文件。"},
+            {"name": "Commands", "description": "通过 OpenSandbox Execd 执行和管理命令。"},
+        ],
     )
     app.state.settings = resolved
     app.state.catalog = catalog
@@ -106,12 +115,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request,
         )
 
-    @app.get("/healthz", summary="存活检查", description="无需认证；仅表示 bridge 进程存活。")
+    @app.get(
+        "/healthz",
+        tags=["Health"],
+        summary="存活检查",
+        description="无需认证；仅表示 bridge 进程存活。",
+    )
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get(
         "/readyz",
+        tags=["Health"],
         summary="就绪检查",
         description="无需认证；仅当 bridge 初始化完成时返回成功。",
     )
@@ -129,9 +144,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ApiProblem(401, "unauthorized", "a valid bearer token is required")
 
     router = APIRouter(prefix="/v1", dependencies=[Depends(authenticate)])
-    register_session_routes(router, ctx)
-    register_file_routes(router, ctx)
-    register_command_routes(router, ctx)
-    register_session_runtime_routes(router, ctx)
+    session_router = APIRouter(tags=["Sessions"])
+    runtime_router = APIRouter(tags=["Session runtime"])
+    mcp_router = APIRouter(tags=["MCP"])
+    file_router = APIRouter(tags=["Files"])
+    command_router = APIRouter(tags=["Commands"])
+    register_session_routes(session_router, ctx)
+    register_session_runtime_routes(runtime_router, ctx)
+    register_mcp_routes(mcp_router, ctx)
+    register_file_routes(file_router, ctx)
+    register_command_routes(command_router, ctx)
+    router.include_router(session_router)
+    router.include_router(runtime_router)
+    router.include_router(mcp_router)
+    router.include_router(file_router)
+    router.include_router(command_router)
     app.include_router(router)
     return app
