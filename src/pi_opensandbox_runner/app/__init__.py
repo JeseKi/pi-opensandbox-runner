@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import hmac
+import ipaddress
+import socket
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -26,8 +28,37 @@ from .problems import ApiProblem, problem_response
 from .session_routes import register_session_routes
 from .session_runtime_routes import register_session_runtime_routes
 
-BEARER_AUTH = HTTPBearer(auto_error=False)
-BearerCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(BEARER_AUTH)]
+EXTERNAL_BEARER_AUTH = HTTPBearer(auto_error=False)
+ExternalBearerCredentials = Annotated[
+    HTTPAuthorizationCredentials | None, Depends(EXTERNAL_BEARER_AUTH)
+]
+
+
+class TrustedProxyAddresses:
+    """Resolve the controller name periodically without trusting forwarded headers."""
+
+    def __init__(self, hostname: str, cache_seconds: float) -> None:
+        self.hostname = hostname
+        self.cache_seconds = cache_seconds
+        self._addresses: set[str] = set()
+        self._refresh_after = 0.0
+
+    def contains(self, host: str) -> bool:
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                return True
+        except ValueError:
+            return False
+
+        now = time.monotonic()
+        if now >= self._refresh_after:
+            try:
+                results = socket.getaddrinfo(self.hostname, None, type=socket.SOCK_STREAM)
+                self._addresses = {str(item[4][0]) for item in results}
+            except socket.gaierror:
+                self._addresses = set()
+            self._refresh_after = now + self.cache_seconds
+        return host in self._addresses
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,6 +78,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         virtual_key=resolved.litellm_virtual_key,
     )
     ctx = BridgeContext(resolved, catalog, journal, supervisor, execd, model_catalog)
+    trusted_proxy_addresses = TrustedProxyAddresses(
+        resolved.trusted_proxy_host, resolved.trusted_proxy_cache_seconds
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -66,7 +100,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         description=(
             "通过 HTTP 管理容器内的 Pi RPC Session、OpenSandbox 文件与命令。"
-            "除健康检查外，所有 `/v1` 接口均需要 `Authorization: Bearer <bridge-token>`。"
+            "经 OpenSandbox server proxy 访问时，所有 `/v1` 接口均需要 "
+            "`Authorization: Bearer <bridge-proxy-token>`。"
             "`cwd` 是 Pi 初始工作目录，不是权限边界。"
         ),
         lifespan=lifespan,
@@ -88,6 +123,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.supervisor = supervisor
     app.state.execd = execd
     app.state.ready = False
+
+    @app.middleware("http")
+    async def restrict_bridge_peers(request: Request, call_next: Any) -> Any:
+        client = request.client
+        if client is None or not trusted_proxy_addresses.contains(client.host):
+            return problem_response(
+                ApiProblem(403, "bridge_peer_forbidden", "bridge peer is not allowed"), request
+            )
+        return await call_next(request)
 
     original_openapi = app.openapi
 
@@ -143,15 +187,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ApiProblem(503, "not_ready", "bridge is not ready")
         return {"status": "ready"}
 
-    def authenticate(credentials: BearerCredentials = None) -> None:
-        if (
-            credentials is None
-            or credentials.scheme.lower() != "bearer"
-            or not hmac.compare_digest(credentials.credentials, resolved.api_token)
-        ):
-            raise ApiProblem(401, "unauthorized", "a valid bearer token is required")
+    def document_external_proxy_auth(credentials: ExternalBearerCredentials = None) -> None:
+        """Expose proxy authentication in OpenAPI without handling its secret here."""
+        del credentials
 
-    router = APIRouter(prefix="/v1", dependencies=[Depends(authenticate)])
+    router = APIRouter(prefix="/v1", dependencies=[Depends(document_external_proxy_auth)])
     session_router = APIRouter(tags=["Sessions"])
     runtime_router = APIRouter(tags=["Session runtime"])
     mcp_router = APIRouter(tags=["MCP"])

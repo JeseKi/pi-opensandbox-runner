@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from pi_opensandbox_runner.app import create_app
+from pi_opensandbox_runner.app import TrustedProxyAddresses, create_app
 from pi_opensandbox_runner.config import Settings
 
 
@@ -15,7 +15,6 @@ from pi_opensandbox_runner.config import Settings
 async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
     fake_pi = Path(__file__).with_name("fake_pi.py")
     settings = Settings(
-        api_token="test-token",
         state_root=tmp_path / "state",
         pi_session_dir=tmp_path / "pi-sessions",
         workspace_root=tmp_path / "workspace",
@@ -31,7 +30,6 @@ async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
         AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
-            headers={"Authorization": "Bearer test-token"},
         ) as http,
     ):
         yield http
@@ -39,11 +37,8 @@ async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
 
 @pytest.mark.asyncio
 async def test_auth_and_session_lifecycle(client: AsyncClient, tmp_path: Path) -> None:
-    unauthenticated = await client.get(
-        "/v1/sessions",
-        headers={"Authorization": ""},
-    )
-    assert unauthenticated.status_code == 401
+    unauthenticated = await client.get("/v1/sessions")
+    assert unauthenticated.status_code == 200
 
     arbitrary_cwd = tmp_path / "outside-default-workspace"
     created = await client.post(
@@ -104,6 +99,44 @@ async def test_auth_and_session_lifecycle(client: AsyncClient, tmp_path: Path) -
     deleted = await client.delete(f"/v1/sessions/{session_id}", params={"force": "true"})
     assert deleted.status_code == 204
     assert (await client.get(f"/v1/sessions/{session_id}")).status_code == 404
+
+
+def test_trusted_proxy_addresses_resolves_only_the_configured_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_getaddrinfo(host: str, *_: object, **__: object) -> list[tuple[object, ...]]:
+        assert host == "opensandbox"
+        return [(2, 1, 6, "", ("192.0.2.42", 0))]
+
+    monkeypatch.setattr("pi_opensandbox_runner.app.socket.getaddrinfo", fake_getaddrinfo)
+    peers = TrustedProxyAddresses("opensandbox", 30)
+    assert peers.contains("127.0.0.1")
+    assert peers.contains("192.0.2.42")
+    assert not peers.contains("192.0.2.99")
+
+
+@pytest.mark.asyncio
+async def test_bridge_rejects_non_proxy_network_peer(tmp_path: Path) -> None:
+    fake_pi = Path(__file__).with_name("fake_pi.py")
+    settings = Settings(
+        state_root=tmp_path / "state",
+        pi_session_dir=tmp_path / "pi-sessions",
+        workspace_root=tmp_path / "workspace",
+        pi_executable=str(fake_pi),
+        model_catalog_path=Path(__file__).parents[1] / "config" / "pi-models.json",
+        trusted_proxy_host="localhost",
+    )
+    app = create_app(settings)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(
+            transport=ASGITransport(app=app, client=("192.0.2.99", 12345)),
+            base_url="http://test",
+        ) as http,
+    ):
+        denied = await http.get("/healthz")
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "bridge_peer_forbidden"
 
 
 @pytest.mark.asyncio
@@ -201,7 +234,7 @@ async def test_mcp_server_crud_and_session_binding(client: AsyncClient) -> None:
         json={
             "name": "bad-header",
             "url": "https://mcp.example.test/mcp",
-            "headers": {"Authorization": "Bearer ${BRIDGE_API_TOKEN}"},
+            "headers": {"Authorization": "Bearer ${PI_RUNNER_INTERNAL_TOKEN}"},
         },
     )
     assert rejected_header.status_code == 422

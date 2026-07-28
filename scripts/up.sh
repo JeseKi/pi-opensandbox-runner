@@ -79,11 +79,16 @@ if [[ -f "$STATE_FILE" ]]; then
   EXISTING_ID="$(jq -r '.sandbox_id // empty' "$STATE_FILE")"
   if [[ -n "$EXISTING_ID" ]] \
     && api GET "/v1/sandboxes/${EXISTING_ID}" >/dev/null 2>&1; then
+    if [[ -z "$(jq -r '.bridge_proxy_token // empty' "$STATE_FILE")" ]]; then
+      echo "Sandbox '$NAME' uses the legacy bridge-token model." >&2
+      echo "Run scripts/down.sh $NAME, then rerun this command to migrate without deleting volumes." >&2
+      exit 1
+    fi
     echo "Sandbox '$NAME' is already running."
     echo "Bridge URL: $(jq -r '.bridge_url' "$STATE_FILE")"
     echo "Credentials: $STATE_FILE (mode 0600)"
     if [[ "$SHOW_TOKEN" == true ]]; then
-      echo "Token: $(jq -r '.bridge_token' "$STATE_FILE")"
+      echo "Token: $(jq -r '.bridge_proxy_token' "$STATE_FILE")"
     fi
     exit 0
   fi
@@ -133,13 +138,13 @@ if [[ -n "$MCP_ENV_FILE" ]]; then
   done <"$MCP_ENV_FILE"
 fi
 
-BRIDGE_TOKEN="$(openssl rand -hex 32)"
+BRIDGE_PROXY_TOKEN="$(openssl rand -hex 32)"
+BRIDGE_PROXY_TOKEN_HASH="$(printf '%s' "$BRIDGE_PROXY_TOKEN" \
+  | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
 INTERNAL_ENV="$(jq -n \
-  --arg token "$BRIDGE_TOKEN" \
   --arg model "$MODEL" \
   --arg litellm_key "$LITELLM_KEY" \
   '{
-    BRIDGE_API_TOKEN: $token,
     LITELLM_VIRTUAL_KEY: $litellm_key,
     HOME: "/root",
     PI_CODING_AGENT_SESSION_DIR: "/root/.pi/agent/sessions",
@@ -152,6 +157,7 @@ ENV_JSON="$(jq -n --argjson mcp "$MCP_ENV" --argjson internal "$INTERNAL_ENV" '$
 PAYLOAD="$(jq -n \
   --arg image "$BRIDGE_IMAGE" \
   --arg name "$NAME" \
+  --arg bridge_proxy_token_hash "$BRIDGE_PROXY_TOKEN_HASH" \
   --arg cpu "$CPU" \
   --arg memory "$MEMORY" \
   --arg pi_volume "pi-runner-${NAME}-pi" \
@@ -163,7 +169,11 @@ PAYLOAD="$(jq -n \
     timeout: null,
     resourceLimits: {cpu: $cpu, memory: $memory},
     env: $env,
-    metadata: {name: $name, component: "pi-opensandbox-runner"},
+    metadata: {
+      name: $name,
+      component: "pi-opensandbox-runner",
+      "pi-runner.bridge-proxy-token-sha256": $bridge_proxy_token_hash
+    },
     volumes: [
       {
         name: "pi-state",
@@ -238,7 +248,7 @@ jq -n \
   --arg name "$NAME" \
   --arg sandbox_id "$SANDBOX_ID" \
   --arg bridge_url "$BRIDGE_URL" \
-  --arg bridge_token "$BRIDGE_TOKEN" \
+  --arg bridge_proxy_token "$BRIDGE_PROXY_TOKEN" \
   --arg litellm_key "$LITELLM_KEY" \
   --arg pi_volume "pi-runner-${NAME}-pi" \
   --arg workspace_volume "pi-runner-${NAME}-workspace" \
@@ -246,7 +256,7 @@ jq -n \
     name: $name,
     sandbox_id: $sandbox_id,
     bridge_url: $bridge_url,
-    bridge_token: $bridge_token,
+    bridge_proxy_token: $bridge_proxy_token,
     litellm_virtual_key: $litellm_key,
     litellm_revocation_pending: false,
     pi_volume: $pi_volume,
@@ -260,5 +270,5 @@ echo "Sandbox '$NAME' is ready."
 echo "Bridge URL: $BRIDGE_URL"
 echo "Credentials: $STATE_FILE (mode 0600)"
 if [[ "$SHOW_TOKEN" == true ]]; then
-  echo "Token: $BRIDGE_TOKEN"
+  echo "Token: $BRIDGE_PROXY_TOKEN"
 fi

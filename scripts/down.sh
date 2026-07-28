@@ -31,10 +31,10 @@ if [[ -n "$SANDBOX_ID" ]]; then
 fi
 UPDATED="$(mktemp "${RUNTIME_DIR}/${NAME}.XXXXXX")"
 if [[ "$REVOCATION_PENDING" == true ]]; then
-  jq '.sandbox_id = null | .bridge_url = null | .litellm_revocation_pending = true' \
+  jq '.sandbox_id = null | .bridge_url = null | del(.bridge_proxy_token) | .litellm_revocation_pending = true' \
     "$STATE_FILE" >"$UPDATED"
 else
-  jq '.sandbox_id = null | .bridge_url = null | del(.litellm_virtual_key, .litellm_revocation_pending)' \
+  jq '.sandbox_id = null | .bridge_url = null | del(.bridge_proxy_token, .litellm_virtual_key, .litellm_revocation_pending)' \
     "$STATE_FILE" >"$UPDATED"
 fi
 chmod 600 "$UPDATED"

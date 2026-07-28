@@ -79,13 +79,13 @@ erDiagram
 ```mermaid
 flowchart LR
     subgraph caller[调用方]
-        request[POST /v1/sessions/:id/prompts\nBearer bridge token + model]
+        request[POST /v1/sessions/:id/prompts\nBearer bridge proxy token + model]
         sse[读取 SSE / entries]
     end
 
     subgraph sandbox[OpenSandbox 私网沙箱]
         subgraph bridge[FastAPI Bridge]
-            auth[Bridge 令牌鉴权与模型白名单校验]
+            auth[来源校验与模型白名单校验]
             session[读取/更新 Session 元数据]
             restart{模型目录或运行配置\n是否已变更?}
             supervisor[会话监督器\n启动或复用 Pi RPC]
@@ -166,11 +166,11 @@ chmod 600 .litellm.env
 
 ```bash
 curl -sS "${BRIDGE_URL}/v1/models/config" \
-  -H "Authorization: Bearer ${BRIDGE_TOKEN}" > models-config.json
+  -H "Authorization: Bearer ${BRIDGE_PROXY_TOKEN}" > models-config.json
 
 # 在 models-config.json 的 providers.litellm.models 中加入 gpt-5.6-terra 元数据。
 curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
-  -H "Authorization: Bearer ${BRIDGE_TOKEN}" \
+  -H "Authorization: Bearer ${BRIDGE_PROXY_TOKEN}" \
   -H "Content-Type: application/json" \
   --data-binary @models-config.json | jq
 ```
@@ -204,7 +204,7 @@ curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
 2. 在本地 Pi bridge 镜像不存在时构建镜像；
 3. 创建两个命名卷；
 4. 通过 OpenSandbox API 创建 sandbox；
-5. 输出 bridge URL，并将独立 Bearer token 写入权限为 `0600` 的状态文件。
+5. 输出 bridge URL，并将独立的外部代理 Bearer token 写入权限为 `0600` 的状态文件。
 
 `alice` 是逻辑名称，不强依赖 Docker 自动生成的容器名。运行信息和 token 保存在
 `.runtime/alice.json`，权限为 `0600`。默认不会把 token 输出到终端，避免泄漏到 shell
@@ -231,12 +231,16 @@ curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
 ./scripts/destroy.sh alice --yes
 ```
 
+升级到外部 proxy token 模型前创建的 sandbox 仍可暂时使用旧 Bridge 鉴权；要移除其容器内的
+旧 bridge token，执行一次 `./scripts/down.sh alice && ./scripts/up.sh alice --model coding-default`。
+这会签发新 token 和 LiteLLM virtual key，但不会删除两个持久卷。
+
 ## HTTP API
 
-除 `/healthz` 与 `/readyz` 外，所有 bridge 请求都要带：
+经 OpenSandbox server proxy 调用时，所有 `/v1` bridge 请求都要带：
 
 ```http
-Authorization: Bearer <bridge-token>
+Authorization: Bearer <bridge-proxy-token>
 ```
 
 API 文档可直接访问 `${BRIDGE_URL}/docs`。Swagger UI 使用相对 URL 加载
@@ -250,15 +254,17 @@ API 文档可直接访问 `${BRIDGE_URL}/docs`。Swagger UI 使用相对 URL 加
 自动分配的 execd/egress 端口强制绑定到 `127.0.0.1`，不会在 `0.0.0.0` 发布随机端口。若要让其他内网机器访问，
 请在宿主机上单独配置有认证的反向代理、VPN 或 SSH tunnel；不要直接改为 Docker 全接口监听。
 
-该本地派生镜像还会保留经 server proxy 进入 sandbox 的 `Authorization` 请求头；这是 bridge
-Bearer 鉴权及 Swagger UI 的 **Authorize** 功能所必需的。OpenSandbox 的管理 API key 仍不会转发。
+派生的 OpenSandbox server proxy 会按 sandbox metadata 中保存的 SHA-256 摘要校验该 token，
+然后在转发前剥离 `Authorization`。因此 token 不会出现在 Pi 容器环境变量、进程环境或 bridge
+配置中。Bridge 仅接受本容器回环请求与 `opensandbox` 代理容器的真实 TCP 来源；同一 Docker
+私网中的其他 sandbox 不能绕过 proxy 直连。OpenSandbox 的管理 API key 同样不会转发。
 
 下面假定：
 
 ```bash
 BRIDGE_URL="$(jq -r .bridge_url .runtime/alice.json)"
-BRIDGE_TOKEN="$(jq -r .bridge_token .runtime/alice.json)"
-AUTH="Authorization: Bearer ${BRIDGE_TOKEN}"
+BRIDGE_PROXY_TOKEN="$(jq -r .bridge_proxy_token .runtime/alice.json)"
+AUTH="Authorization: Bearer ${BRIDGE_PROXY_TOKEN}"
 ```
 
 读取 token 的命令同样可能被终端审计或日志系统记录；生产集成应由进程直接读取状态
@@ -403,7 +409,7 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/stop" -H "$AUTH"
 
 ### 文件浏览与命令执行
 
-这些接口同样使用 bridge Bearer token，内部经由 OpenSandbox Execd 调用，不会公开 Execd
+这些接口同样使用 bridge proxy Bearer token，内部经由 OpenSandbox Execd 调用，不会公开 Execd
 端口。路径不受 workspace 限制，可访问容器内任意 Pi 进程有权访问的路径。
 
 ```bash
@@ -545,7 +551,6 @@ uv run pytest
 直接运行 bridge：
 
 ```bash
-export BRIDGE_API_TOKEN=dev-secret
 export PI_DEFAULT_MODEL=coding-default
 uv run pi-opensandbox-runner
 ```
@@ -555,11 +560,11 @@ uv run pi-opensandbox-runner
 后续接入 `/home/jese--ki/Projects/dev/agent-runner` 时，推荐把这里视为每用户 sandbox
 的数据面：
 
-- agent-runner 保存 OpenSandbox sandbox ID、bridge URL 与 bridge token；
+- agent-runner 保存 OpenSandbox sandbox ID、bridge URL 与 bridge proxy token；
 - 用户操作映射到本项目的 session/prompt/events/entries API；
 - SSE `seq` 作为断线续传位置；
 - OpenSandbox Server 仍是内部控制面，不把其 API key 暴露给最终用户。
 
-当前 Bearer token 是容器级 token：持有者可管理该容器中的全部 Pi session。若未来一个
+当前 Bearer token 是容器级 proxy token：持有者可管理该容器中的全部 Pi session。若未来一个
 容器承载多个不互信用户，应在 agent-runner 网关层做用户与 sandbox 的绑定，或改为每
 session 授权。

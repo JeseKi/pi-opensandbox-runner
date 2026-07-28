@@ -9,7 +9,9 @@ def main() -> None:
         factory=True,
         host="0.0.0.0",
         port=8765,
-        proxy_headers=True,
+        # Source-address access control is part of the bridge boundary.  Do not
+        # replace the TCP peer with a caller-controlled forwarded header.
+        proxy_headers=False,
     )
 
 
