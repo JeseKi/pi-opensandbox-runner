@@ -12,6 +12,7 @@ from ..catalog import Catalog, SessionRecord
 from ..config import Settings
 from ..execd import ExecdClient, ExecdError
 from ..journal import EventJournal
+from ..model_catalog import ModelCatalog
 from ..rpc import SessionSupervisor
 from .problems import ApiProblem
 
@@ -26,14 +27,24 @@ class BridgeContext:
         journal: EventJournal,
         supervisor: SessionSupervisor,
         execd: ExecdClient,
+        model_catalog: ModelCatalog,
     ):
         self.settings = settings
         self.catalog = catalog
         self.journal = journal
         self.supervisor = supervisor
         self.execd = execd
+        self.model_catalog = model_catalog
         self._file_locks: dict[str, asyncio.Lock] = {}
         self._file_locks_guard = asyncio.Lock()
+
+    def require_allowed_model(self, model: str) -> None:
+        if model not in self.settings.allowed_models():
+            raise ApiProblem(
+                422,
+                "model_not_allowed",
+                "only configured LiteLLM model aliases may be used",
+            )
 
     async def require_session(self, session_id: str) -> SessionRecord:
         record = await self.catalog.get(session_id)

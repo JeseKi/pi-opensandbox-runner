@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, Response
 
 from ..rpc import McpEnvironmentMissing, RpcError, RpcProcessExited, SessionCapacityExceeded
 from ..schemas import (
+    ModelCatalogOut,
     PromptAccepted,
     PromptCreate,
     SessionCreate,
@@ -34,14 +35,14 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
         ),
     )
     async def create_session(payload: SessionCreate) -> SessionOut:
-        provider = payload.provider or ctx.settings.default_provider
         model = payload.model or ctx.settings.default_model
-        if not provider or not model:
+        if not model:
             raise ApiProblem(
                 422,
                 "model_required",
-                "provider and model are required when no container defaults are configured",
+                "model is required when no container default is configured",
             )
+        ctx.require_allowed_model(model)
         session_id = str(uuid.uuid4())
         cwd = (
             Path(payload.cwd)
@@ -58,7 +59,6 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
             session_id=session_id,
             name=payload.name,
             cwd=str(cwd.resolve()),
-            provider=provider,
             model=model,
             thinking_level=payload.thinking_level,
             system_prompt=payload.system_prompt,
@@ -66,9 +66,7 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
         )
         if payload.mcp_server_ids:
             try:
-                bound = await ctx.catalog.set_session_mcp_servers(
-                    record.id, payload.mcp_server_ids
-                )
+                bound = await ctx.catalog.set_session_mcp_servers(record.id, payload.mcp_server_ids)
             except KeyError as exc:
                 await ctx.catalog.delete(record.id)
                 raise ApiProblem(
@@ -76,6 +74,10 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
                 ) from exc
             assert bound is not None
         return await session_out(record, ctx.supervisor)
+
+    @router.get("/models", response_model=ModelCatalogOut, summary="列出可用 LiteLLM 模型")
+    async def models() -> ModelCatalogOut:
+        return ModelCatalogOut(models=sorted(ctx.settings.allowed_models()))
 
     @router.get(
         "/sessions",
@@ -85,9 +87,7 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
     )
     async def list_sessions(
         cursor: Annotated[str | None, Query(description="上一页返回的 next_cursor。")] = None,
-        limit: Annotated[
-            int, Query(ge=1, le=200, description="每页数量，范围 1 至 200。")
-        ] = 50,
+        limit: Annotated[int, Query(ge=1, le=200, description="每页数量，范围 1 至 200。")] = 50,
     ) -> SessionPage:
         before_time: str | None = None
         before_id: str | None = None
@@ -144,9 +144,7 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
             "正在生成时返回 409 session_streaming。"
         ),
     )
-    async def update_system_prompt(
-        session_id: str, payload: SystemPromptUpdate
-    ) -> SessionOut:
+    async def update_system_prompt(session_id: str, payload: SystemPromptUpdate) -> SessionOut:
         async with ctx.supervisor.command_lock(session_id):
             record = await ctx.require_session(session_id)
             process = ctx.supervisor.active(session_id)
@@ -168,9 +166,7 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
         "/sessions/{session_id}/system-prompt",
         response_model=SessionOut,
         summary="清除 Session system prompt",
-        description=(
-            "恢复 Pi 默认 prompt；运行中的生成任务不能修改，返回 409 session_streaming。"
-        ),
+        description=("恢复 Pi 默认 prompt；运行中的生成任务不能修改，返回 409 session_streaming。"),
     )
     async def clear_system_prompt(session_id: str) -> SessionOut:
         async with ctx.supervisor.command_lock(session_id):
@@ -227,15 +223,34 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
         description=(
             "必要时恢复已停止的 Session。delivery=auto 在 idle 时使用 prompt，"
             "在生成时使用 follow_up；显式 steer/follow_up 要求 Pi 正在生成。"
-            "可同时切换 provider/model 与 thinking_level，设置会持久化到 Session。"
+            "可同时切换 model 与 thinking_level，设置会持久化到 Session。"
         ),
     )
     async def prompt(session_id: str, payload: PromptCreate) -> PromptAccepted:
         command_id = str(uuid.uuid4())
         async with ctx.supervisor.command_lock(session_id):
             try:
+                if payload.model is not None:
+                    ctx.require_allowed_model(payload.model)
                 record = await ctx.require_session(session_id)
+                if payload.model is not None:
+                    if record.model != payload.model:
+                        updated = await ctx.catalog.update_model_settings(
+                            session_id, model=payload.model
+                        )
+                        assert updated is not None
+                        record = updated
+                else:
+                    ctx.require_allowed_model(record.model)
                 if await ctx.supervisor.needs_configuration_restart(record):
+                    current = ctx.supervisor.active(session_id)
+                    if current is not None and current.is_streaming:
+                        raise ApiProblem(
+                            409,
+                            "model_catalog_update_pending",
+                            "wait for the current agent turn before applying the "
+                            "model catalog update",
+                        )
                     await ctx.supervisor.stop(session_id, abort=False)
                 process = await ctx.supervisor.get_or_start(record)
                 state_response = await process.request({"type": "get_state"})
@@ -251,16 +266,13 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
                             "session_not_streaming",
                             f"{delivery} requires a running agent turn",
                         )
-                if payload.provider is not None and payload.model is not None:
+                if payload.model is not None:
                     await process.request(
                         {
                             "type": "set_model",
-                            "provider": payload.provider,
+                            "provider": "litellm",
                             "modelId": payload.model,
                         }
-                    )
-                    await ctx.catalog.update_model_settings(
-                        session_id, provider=payload.provider, model=payload.model
                     )
                 if payload.thinking_level is not None:
                     await process.request(

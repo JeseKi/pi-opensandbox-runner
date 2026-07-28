@@ -18,9 +18,51 @@ services:
     networks:
       - pi-runner-internal
 
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.92.0
+    restart: unless-stopped
+    env_file:
+      - ./.litellm.env
+    environment:
+      DATABASE_URL: postgresql://litellm:litellm@litellm-db:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+    command: ["--config", "/app/config.yaml"]
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    expose:
+      - "4000"
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    networks:
+      - pi-runner-internal
+      - pi-runner-control
+
+  litellm-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+    volumes:
+      - litellm-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - pi-runner-control
+
 volumes:
   opensandbox-control:
+  litellm-db:
 
 networks:
   pi-runner-internal:
     name: pi-runner-internal
+  pi-runner-control:
+    internal: true

@@ -19,6 +19,11 @@ STATE_FILE="$(state_file "$NAME")"
 }
 
 SANDBOX_ID="$(jq -r '.sandbox_id // empty' "$STATE_FILE")"
+LITELLM_KEY="$(jq -r '.litellm_virtual_key // empty' "$STATE_FILE")"
+if [[ -n "$LITELLM_KEY" ]] && ! block_litellm_key "$LITELLM_KEY"; then
+  echo "LiteLLM key revocation failed; state and volumes were retained so destroy can be retried." >&2
+  exit 1
+fi
 if [[ -n "$SANDBOX_ID" ]]; then
   api DELETE "/v1/sandboxes/${SANDBOX_ID}" >/dev/null || true
 fi

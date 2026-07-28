@@ -79,7 +79,6 @@ async def session_out(record: SessionRecord, supervisor: SessionSupervisor) -> S
         id=record.id,
         name=record.name,
         cwd=record.cwd,
-        provider=record.provider,
         model=record.model,
         thinking_level=record.thinking_level,
         system_prompt=record.system_prompt,

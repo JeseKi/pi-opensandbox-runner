@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 DeliveryMode = Literal["auto", "steer", "follow_up"]
@@ -28,18 +28,14 @@ def validate_mcp_headers(headers: dict[str, str]) -> dict[str, str]:
 
 
 class SessionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=120, description="非空 Session 显示名称。")
-    provider: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=80,
-        description="模型供应商；必须与 model 一起提供，或同时省略以使用容器默认值。",
-    )
     model: str | None = Field(
         default=None,
         min_length=1,
         max_length=240,
-        description="模型 ID；必须与 provider 一起提供。",
+        description="LiteLLM 模型别名；省略时使用容器默认值。",
     )
     thinking_level: ThinkingLevel | None = Field(
         default=None,
@@ -82,13 +78,6 @@ class SessionCreate(BaseModel):
             raise ValueError("mcp_server_ids must not contain duplicates")
         return value
 
-    @model_validator(mode="after")
-    def paired_model(self) -> SessionCreate:
-        if (self.provider is None) != (self.model is None):
-            raise ValueError("provider and model must be supplied together")
-        return self
-
-
 class SessionPatch(BaseModel):
     name: str = Field(min_length=1, max_length=120, description="新的非空 Session 显示名称。")
 
@@ -105,7 +94,6 @@ class SessionOut(BaseModel):
     id: str = Field(description="bridge 生成的稳定 Session UUID。")
     name: str = Field(description="Session 显示名称。")
     cwd: str = Field(description="Pi 初始工作目录，不限制 Pi 访问其他路径。")
-    provider: str = Field(description="恢复该 Session 时使用的 provider。")
     model: str = Field(description="恢复该 Session 时使用的 model。")
     thinking_level: str | None = Field(description="持久化的模型思考强度。")
     system_prompt: str | None = Field(description="完整 Session 自定义 system prompt。")
@@ -129,7 +117,24 @@ class SessionPage(BaseModel):
     has_more: bool
 
 
+class ModelCatalogOut(BaseModel):
+    models: list[str]
+
+
+class ModelCatalogConfigOut(BaseModel):
+    config: dict[str, Any]
+    models: list[str]
+    fingerprint: str
+
+
+class ModelCatalogReplaceOut(ModelCatalogConfigOut):
+    migrated_session_count: int
+    restart_on_next_request: bool = True
+
+
 class PromptCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = Field(
         min_length=1, max_length=100_000, description="非空用户消息，最大 100,000 字符。"
     )
@@ -137,17 +142,11 @@ class PromptCreate(BaseModel):
         default="auto",
         description="auto 自动选择；steer/follow_up 仅在 Pi 正在生成时可用。",
     )
-    provider: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=80,
-        description="本次切换的 provider，须与 model 成对提供。",
-    )
     model: str | None = Field(
         default=None,
         min_length=1,
         max_length=240,
-        description="本次切换的 model，须与 provider 成对提供。",
+        description="本次切换的 LiteLLM 模型别名。",
     )
     thinking_level: ThinkingLevel | None = Field(
         default=None, description="本次切换的思考强度，并持久化供恢复使用。"
@@ -159,13 +158,6 @@ class PromptCreate(BaseModel):
         if not value.strip():
             raise ValueError("message cannot be blank")
         return value
-
-    @model_validator(mode="after")
-    def paired_model(self) -> PromptCreate:
-        if (self.provider is None) != (self.model is None):
-            raise ValueError("provider and model must be supplied together")
-        return self
-
 
 class PromptAccepted(BaseModel):
     command_id: str

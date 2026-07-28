@@ -20,8 +20,8 @@ async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
         pi_session_dir=tmp_path / "pi-sessions",
         workspace_root=tmp_path / "workspace",
         pi_executable=str(fake_pi),
-        default_provider="fake",
-        default_model="fake-model",
+        default_model="coding-default",
+        model_catalog_path=Path(__file__).parents[1] / "config" / "pi-models.json",
         rpc_timeout_seconds=2,
         stop_grace_seconds=1,
     )
@@ -61,16 +61,14 @@ async def test_auth_and_session_lifecycle(client: AsyncClient, tmp_path: Path) -
         f"/v1/sessions/{session_id}/prompts",
         json={
             "message": "hello",
-            "provider": "alternate-provider",
-            "model": "alternate-model",
+            "model": "coding-default",
             "thinking_level": "high",
         },
     )
     assert accepted.status_code == 202
     assert accepted.json()["delivery"] == "prompt"
     updated = await client.get(f"/v1/sessions/{session_id}")
-    assert updated.json()["provider"] == "alternate-provider"
-    assert updated.json()["model"] == "alternate-model"
+    assert updated.json()["model"] == "coding-default"
     assert updated.json()["thinking_level"] == "high"
 
     entries = await client.get(f"/v1/sessions/{session_id}/entries", params={"limit": 1})
@@ -133,13 +131,33 @@ async def test_docs_use_the_opensandbox_proxy_prefix(client: AsyncClient) -> Non
         "Session runtime"
     ]
     assert schema.json()["paths"]["/v1/mcp/servers"]["get"]["tags"] == ["MCP"]
+    assert schema.json()["paths"]["/v1/models/config"]["put"]["tags"] == ["Models"]
+
+    config = await client.get("/v1/models/config")
+    assert config.status_code == 200
+    assert config.json()["models"] == ["coding-default"]
+    assert config.json()["fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_rejects_unknown_model(client: AsyncClient) -> None:
+    models = await client.get("/v1/models")
+    assert models.status_code == 200
+    assert models.json() == {"models": ["coding-default"]}
+
+    rejected = await client.post(
+        "/v1/sessions",
+        json={"name": "unknown-model", "model": "not-configured"},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["code"] == "model_not_allowed"
 
 
 @pytest.mark.asyncio
 async def test_validation_listing_and_event_replay(client: AsyncClient) -> None:
     bad_model = await client.post(
         "/v1/sessions",
-        json={"name": "bad", "provider": "fake"},
+        json={"name": "bad", "model": "fake"},
     )
     assert bad_model.status_code == 422
     assert bad_model.headers["content-type"].startswith("application/problem+json")

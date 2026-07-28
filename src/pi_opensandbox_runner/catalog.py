@@ -27,7 +27,6 @@ class SessionModel(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     cwd: Mapped[str] = mapped_column(String, nullable=False)
-    provider: Mapped[str] = mapped_column(String, nullable=False)
     model: Mapped[str] = mapped_column(String, nullable=False)
     thinking_level: Mapped[str | None] = mapped_column(String)
     system_prompt: Mapped[str | None] = mapped_column(Text)
@@ -67,7 +66,6 @@ class SessionRecord:
     id: str
     name: str
     cwd: str
-    provider: str
     model: str
     thinking_level: str | None
     system_prompt: str | None
@@ -149,7 +147,6 @@ class Catalog:
         session_id: str,
         name: str,
         cwd: str,
-        provider: str,
         model: str,
         thinking_level: str | None,
         system_prompt: str | None = None,
@@ -162,7 +159,6 @@ class Catalog:
                 id=session_id,
                 name=name,
                 cwd=cwd,
-                provider=provider,
                 model=model,
                 thinking_level=thinking_level,
                 system_prompt=system_prompt,
@@ -226,17 +222,36 @@ class Catalog:
         self,
         session_id: str,
         *,
-        provider: str | None = None,
         model: str | None = None,
         thinking_level: str | None = None,
         update_thinking_level: bool = False,
     ) -> SessionRecord | None:
         values: dict[str, Any] = {}
-        if provider is not None and model is not None:
-            values.update(provider=provider, model=model)
+        if model is not None:
+            values["model"] = model
         if update_thinking_level:
             values["thinking_level"] = thinking_level
         return await self._update(session_id, **values)
+
+    async def migrate_removed_models(
+        self, allowed_models: set[str], *, default_model: str
+    ) -> list[str]:
+        """Move persisted LiteLLM sessions off models removed from the catalog."""
+
+        def operation(db: Session) -> list[str]:
+            items = list(
+                db.scalars(
+                    select(SessionModel).where(
+                        SessionModel.model.not_in(allowed_models),
+                    )
+                )
+            )
+            for item in items:
+                item.model = default_model
+                item.updated_at = utc_now()
+            return [item.id for item in items]
+
+        return await self._run(operation)
 
     async def _update(self, session_id: str, **values: Any) -> SessionRecord | None:
         def operation(db: Session) -> SessionRecord | None:
@@ -343,9 +358,7 @@ class Catalog:
     async def get_mcp_server(self, server_id: str) -> McpServerRecord | None:
         return await self._run(
             lambda db: (
-                None
-                if (item := db.get(McpServerModel, server_id)) is None
-                else _mcp_record(item)
+                None if (item := db.get(McpServerModel, server_id)) is None else _mcp_record(item)
             )
         )
 
@@ -436,7 +449,6 @@ class Catalog:
                     session_id=str(parsed["id"]),
                     name=str(parsed["name"]),
                     cwd=str(parsed["cwd"]),
-                    provider=str(parsed["provider"]),
                     model=str(parsed["model"]),
                     thinking_level=parsed["thinking_level"],
                 )
@@ -464,7 +476,6 @@ def inspect_session_file(path: Path) -> dict[str, str | None] | None:
 def _inspect_session_file(path: Path) -> dict[str, str | None] | None:
     header: dict[str, Any] | None = None
     name: str | None = None
-    provider = "unknown"
     model = "unknown"
     thinking_level: str | None = None
     updated_at: str | None = None
@@ -481,10 +492,7 @@ def _inspect_session_file(path: Path) -> dict[str, str | None] | None:
             if entry.get("type") == "session_info":
                 name = str(entry.get("name") or name or "") or None
             elif entry.get("type") == "model_change":
-                provider, model = (
-                    str(entry.get("provider") or provider),
-                    str(entry.get("modelId") or model),
-                )
+                model = str(entry.get("modelId") or model)
             elif entry.get("type") == "thinking_level_change":
                 thinking_level = str(entry.get("thinkingLevel") or "") or None
             elif (
@@ -492,10 +500,7 @@ def _inspect_session_file(path: Path) -> dict[str, str | None] | None:
                 and isinstance(entry.get("message"), dict)
                 and entry["message"].get("role") == "assistant"
             ):
-                provider, model = (
-                    str(entry["message"].get("provider") or provider),
-                    str(entry["message"].get("model") or model),
-                )
+                model = str(entry["message"].get("model") or model)
             if isinstance(entry.get("timestamp"), str):
                 updated_at = entry["timestamp"]
     except OSError:
@@ -507,7 +512,6 @@ def _inspect_session_file(path: Path) -> dict[str, str | None] | None:
         "id": header["id"],
         "name": name or header["id"],
         "cwd": str(header.get("cwd") or "/root/workspace"),
-        "provider": provider,
         "model": model,
         "thinking_level": thinking_level,
         "created_at": created,

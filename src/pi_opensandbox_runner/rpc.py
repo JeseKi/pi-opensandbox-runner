@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +18,13 @@ from .journal import EventJournal
 from .mcp import McpRuntimeConfig, build_runtime_config, missing_environment, write_runtime_config
 
 logger = logging.getLogger(__name__)
+
+
+def _model_catalog_fingerprint(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "missing"
 
 
 class RpcError(RuntimeError):
@@ -50,6 +58,7 @@ class PiRpcProcess:
         timeout: float,
         system_prompt_config: tuple[str | None, str],
         mcp_config_fingerprint: str,
+        model_catalog_fingerprint: str,
         on_event: EventHandler,
         on_exit: ExitHandler,
     ):
@@ -58,6 +67,7 @@ class PiRpcProcess:
         self.timeout = timeout
         self.system_prompt_config = system_prompt_config
         self.mcp_config_fingerprint = mcp_config_fingerprint
+        self.model_catalog_fingerprint = model_catalog_fingerprint
         self.on_event = on_event
         self.on_exit = on_exit
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -96,7 +106,7 @@ class PiRpcProcess:
                     "--session-id",
                     record.id,
                     "--provider",
-                    record.provider,
+                    "litellm",
                     "--model",
                     record.model,
                     "--name",
@@ -135,6 +145,7 @@ class PiRpcProcess:
             timeout=settings.rpc_timeout_seconds,
             system_prompt_config=(record.system_prompt, record.system_prompt_mode),
             mcp_config_fingerprint=mcp_config.fingerprint,
+            model_catalog_fingerprint=_model_catalog_fingerprint(settings.model_catalog_path),
             on_event=on_event,
             on_exit=on_exit,
         )
@@ -297,6 +308,10 @@ class SessionSupervisor:
         if process is None:
             return False
         if process.system_prompt_config != (record.system_prompt, record.system_prompt_mode):
+            return True
+        if process.model_catalog_fingerprint != _model_catalog_fingerprint(
+            self.settings.model_catalog_path
+        ):
             return True
         servers = await self.catalog.get_session_mcp_servers(record.id)
         assert servers is not None

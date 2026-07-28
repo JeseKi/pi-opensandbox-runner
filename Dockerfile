@@ -81,6 +81,9 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 COPY extensions/pi-runner-mcp/package.json extensions/pi-runner-mcp/package-lock.json /opt/pi-runner-mcp/
 RUN npm ci --prefix /opt/pi-runner-mcp --omit=dev --ignore-scripts --no-audit --no-fund
 COPY extensions/pi-runner-mcp/src /opt/pi-runner-mcp/src
+COPY config/pi-models.json /opt/pi-runner/pi-models.json
+COPY scripts/container-entrypoint.py /usr/local/bin/pi-runner-entrypoint
+RUN chmod 755 /usr/local/bin/pi-runner-entrypoint
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
@@ -90,4 +93,4 @@ RUN uv sync --frozen --no-dev
 RUN mkdir -p /root/.pi/agent/sessions /root/.pi/bridge /root/workspace
 
 EXPOSE 8765
-ENTRYPOINT ["python", "-m", "pi_opensandbox_runner"]
+ENTRYPOINT ["/usr/local/bin/pi-runner-entrypoint"]

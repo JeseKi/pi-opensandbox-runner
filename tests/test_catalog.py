@@ -17,7 +17,6 @@ async def test_empty_logical_session_survives_catalog_restart(tmp_path: Path) ->
         session_id="logical",
         name="empty",
         cwd=str(tmp_path / "workspace"),
-        provider="test",
         model="test",
         thinking_level=None,
     )

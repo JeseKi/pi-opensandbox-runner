@@ -16,7 +16,6 @@ async def test_event_cursor_replay_and_expiry(tmp_path: Path) -> None:
         session_id="session",
         name="events",
         cwd=str(tmp_path),
-        provider="test",
         model="test",
         thinking_level=None,
     )

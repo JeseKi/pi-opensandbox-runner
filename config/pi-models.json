@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "litellm": {
+      "baseUrl": "http://litellm:4000/v1",
+      "api": "openai-completions",
+      "apiKey": "$LITELLM_VIRTUAL_KEY",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "coding-default",
+          "name": "Codign Default",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 264000,
+          "maxTokens": 16000
+        }
+      ]
+    }
+  }
+}

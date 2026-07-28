@@ -11,6 +11,124 @@ Pi session。
 - SQLite 保存逻辑 session 目录；Pi JSONL 保存真实对话历史。
 - 分段 NDJSON 日志保存可恢复的 SSE 事件游标。
 
+## 系统架构与提示词流转
+
+### 实体关系
+
+下图同时描述 SQLite 中的逻辑实体和与其一一对应或按名称关联的持久化文件。其中只有
+`SESSION_MCP_SERVER` 的两条关系是数据库外键；其余关系由 bridge 的运行时协议或命名卷维护。
+
+```mermaid
+erDiagram
+    SANDBOX ||--|| BRIDGE_STATE : "挂载 /root/.pi"
+    BRIDGE_STATE ||--o{ SESSION : "保存元数据"
+    BRIDGE_STATE ||--o{ MCP_SERVER : "保存定义"
+    SESSION ||--o{ SESSION_MCP_SERVER : "绑定"
+    MCP_SERVER ||--o{ SESSION_MCP_SERVER : "被绑定"
+    SESSION ||--o{ EVENT_SEGMENT : "产生事件"
+    SESSION ||--o| PI_SESSION_JSONL : "生成历史"
+    SANDBOX ||--|| MODEL_CATALOG : "持久化 models.json"
+    SANDBOX ||--|| WORKSPACE_VOLUME : "挂载工作目录"
+    LITELLM_PROXY ||--o{ VIRTUAL_KEY : "签发"
+    VIRTUAL_KEY ||--|| SANDBOX : "限定模型访问范围"
+
+    SESSION {
+        string id "主键"
+        string name "名称"
+        string cwd "初始工作目录"
+        string model "LiteLLM 模型别名"
+        string thinking_level "思考等级"
+        string session_file "Pi 历史文件"
+    }
+    MCP_SERVER {
+        string id "主键"
+        string name "唯一名称"
+        string transport "传输方式"
+        string url "服务地址"
+    }
+    SESSION_MCP_SERVER {
+        string session_id "Session 外键"
+        string server_id "MCP Server 外键"
+    }
+    EVENT_SEGMENT {
+        string session_id "所属 Session"
+        integer sequence "事件序号"
+        string ndjson_path "NDJSON 路径"
+    }
+    PI_SESSION_JSONL {
+        string session_id "所属 Session"
+        string path "文件路径"
+    }
+    MODEL_CATALOG {
+        string fingerprint "配置指纹"
+        string path "文件路径"
+    }
+    VIRTUAL_KEY {
+        string models "可用模型"
+        integer tpm_limit "每分钟令牌上限"
+        number max_budget "总预算"
+        string expiry "过期时间"
+    }
+```
+
+### 一次提示词的泳道图
+
+`provider` 在 bridge API 中固定为 LiteLLM，不再是调用方参数；调用方只选择已授权的模型别名。
+模型供应商密钥始终停留在 LiteLLM 容器，sandbox 只持有受限的虚拟密钥（virtual key）。
+
+```mermaid
+flowchart LR
+    subgraph caller[调用方]
+        request[POST /v1/sessions/:id/prompts\nBearer bridge token + model]
+        sse[读取 SSE / entries]
+    end
+
+    subgraph sandbox[OpenSandbox 私网沙箱]
+        subgraph bridge[FastAPI Bridge]
+            auth[Bridge 令牌鉴权与模型白名单校验]
+            session[读取/更新 Session 元数据]
+            restart{模型目录或运行配置\n是否已变更?}
+            supervisor[会话监督器\n启动或复用 Pi RPC]
+            journal[写入 Event Journal]
+        end
+        subgraph persistence[持久卷 /root/.pi]
+            sqlite[(SQLite：会话与 MCP 绑定)]
+            catalog[models.json\n原子替换]
+            history[(Pi session JSONL)]
+            events[(分段 NDJSON)]
+        end
+        pi[Pi RPC 子进程\n固定使用 LiteLLM]
+    end
+
+    subgraph gateway[LiteLLM 私网网关]
+        key[验证沙箱虚拟密钥\n模型、预算、RPM/TPM]
+        route[按模型别名路由]
+    end
+
+    subgraph upstream[模型供应商]
+        model[DeepSeek / OpenAI / Anthropic]
+    end
+
+    request --> auth
+    auth -->|无效令牌 / 未授权模型| reject[401 / 422]
+    auth --> session
+    session <--> sqlite
+    session --> restart
+    catalog -.模型目录指纹.-> restart
+    restart -->|是，且未生成| supervisor
+    restart -->|正在生成| pending[409：模型目录更新待处理]
+    restart -->|否| supervisor
+    supervisor --> pi
+    pi -->|OpenAI 兼容请求\n虚拟密钥| key
+    key -->|限流 / 预算 / 模型限制| gateway_error[LiteLLM 4xx 错误]
+    key --> route
+    route -->|供应商密钥仅在此处使用| model
+    model --> route --> pi
+    pi --> history
+    pi --> journal --> events
+    journal --> sse
+```
+
 ## 重要的权限语义
 
 `cwd` 只是 Pi 的初始工作目录，不是权限边界。默认目录是
@@ -28,20 +146,42 @@ Pi 以 root 运行，可以直接读写容器内其他目录。
 
 要求：Linux Docker、Docker Compose、`bash`、`curl`、`jq`、`openssl`。
 
-先从示例准备模型供应商环境变量：
+先准备仅供 LiteLLM 网关读取的供应商密钥：
 
 ```bash
-cp .env.example .env
+cp .litellm.env.example .litellm.env
+chmod 600 .litellm.env
 ```
 
-编辑 `.env`，只取消所用供应商变量的注释并填写密钥。然后启动一个名为 `alice` 的完整
-实例：
+编辑 `.litellm.env` 填写供应商密钥和 LiteLLM master key。该文件不会挂载或注入 sandbox。
+默认模型别名 `coding-default` 在 `litellm/config.yaml` 与 `config/pi-models.json` 中定义，
+默认路由到 DeepSeek V4 Pro。`gpt-5.6-terra` 已在 LiteLLM 中配置；需要先在目标 sandbox 的
+虚拟 Key 中授权，再通过 bridge 模型目录接口加入该 sandbox。
+
+### 热更新 Pi 可选模型
+
+模型目录是每个 sandbox 独立、持久化的配置。先在 LiteLLM UI 给该 sandbox 的 virtual key
+授权模型，再读取目录并原子提交更新；bridge 会在下一次安全请求前重启对应 Pi RPC 子进程，
+不会重建 sandbox 容器。
+
+```bash
+curl -sS "${BRIDGE_URL}/v1/models/config" \
+  -H "Authorization: Bearer ${BRIDGE_TOKEN}" > models-config.json
+
+# 在 models-config.json 的 providers.litellm.models 中加入 gpt-5.6-terra 元数据。
+curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
+  -H "Authorization: Bearer ${BRIDGE_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data-binary @models-config.json | jq
+```
+
+上传会检查 Pi 文件结构、固定的 LiteLLM 私网配置，以及当前 virtual key 是否已获该模型授权。
+上传期间正在生成的 Session 不会中断；它结束前的新请求会返回 `409 model_catalog_update_pending`。
+然后启动一个名为 `alice` 的完整实例：
 
 ```bash
 ./scripts/up.sh alice \
-  --env-file ./.env \
-  --provider anthropic \
-  --model claude-sonnet-4-20250514
+  --model coding-default
 ```
 
 构建时默认使用 `MIRROR_MODE=auto`：若可访问 Google 则使用官方 Debian、PyPI 和 npm
@@ -51,9 +191,7 @@ cp .env.example .env
 ```bash
 ./scripts/up.sh alice \
   --mirror-mode cn \
-  --env-file ./.env \
-  --provider anthropic \
-  --model claude-sonnet-4-20250514
+  --model coding-default
 ```
 
 可选值为 `auto`、`cn`、`global`，也可通过宿主机 `MIRROR_MODE` 环境变量设置默认值。
@@ -63,7 +201,7 @@ cp .env.example .env
 脚本会：
 
 1. 启动本地 OpenSandbox Server；
-2. 构建 Pi bridge 镜像；
+2. 在本地 Pi bridge 镜像不存在时构建镜像；
 3. 创建两个命名卷；
 4. 通过 OpenSandbox API 创建 sandbox；
 5. 输出 bridge URL，并将独立 Bearer token 写入权限为 `0600` 的状态文件。
@@ -75,9 +213,7 @@ cp .env.example .env
 ```bash
 ./scripts/up.sh alice \
   --show-token \
-  --env-file ./.env \
-  --provider anthropic \
-  --model claude-sonnet-4-20250514
+  --model coding-default
 ```
 
 常用生命周期命令：
@@ -85,8 +221,7 @@ cp .env.example .env
 ```bash
 ./scripts/status.sh alice
 ./scripts/down.sh alice
-./scripts/up.sh alice --env-file ./.env \
-  --provider anthropic --model claude-sonnet-4-20250514
+./scripts/up.sh alice --model coding-default
 ```
 
 `down.sh` 删除 sandbox，但保留 Pi 历史和 workspace 命名卷。再次 `up.sh` 会恢复它们。
@@ -131,7 +266,7 @@ AUTH="Authorization: Bearer ${BRIDGE_TOKEN}"
 
 ### 创建和列出 session
 
-使用容器默认 provider/model：
+使用容器默认 LiteLLM 模型：
 
 ```bash
 curl -sS -X POST "${BRIDGE_URL}/v1/sessions" \
@@ -146,8 +281,7 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions" \
   -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{
     "name":"shared-task",
-    "provider":"anthropic",
-    "model":"claude-sonnet-4-20250514",
+    "model":"coding-default",
     "cwd":"/root/workspace/shared"
   }' | jq
 ```
@@ -190,8 +324,7 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/prompts" \
 使用 `follow_up`。也可显式使用 `steer` 或 `follow_up`；若当前没有活动 turn，会返回
 `409`。
 
-可以在发送时切换本次及后续 session 使用的模型与思考强度；`provider` 和 `model`
-必须同时提供，`thinking_level` 可单独指定。切换会先通过 Pi RPC 生效，再发送 prompt，并
+可以在发送时切换本次及后续 session 使用的 LiteLLM 模型与思考强度；`thinking_level` 可单独指定。切换会先通过 Pi RPC 生效，再发送 prompt，并
 写入 session 元数据，因此停止后恢复 session 时仍会沿用该设置。
 
 ```bash
@@ -199,13 +332,12 @@ curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/prompts" \
   -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{
     "message":"用新的模型继续分析",
-    "provider":"deepseek",
-    "model":"deepseek-v4-flash",
+    "model":"coding-default",
     "thinking_level":"off"
   }' | jq
 ```
 
-具体可用的模型和支持的思考等级取决于 Pi 已配置的 provider/model；不支持时 Pi 会拒绝请求。
+具体可用的模型和支持的思考等级取决于 Pi 已配置的 LiteLLM 模型目录；不支持时 Pi 会拒绝请求。
 
 ### 外部 MCP
 
@@ -214,10 +346,17 @@ stdio、浏览器 OAuth、MCP resources/prompts/sampling。MCP Server 可在同�
 Session 绑定。工具会以 `mcp_<server>_<tool>` 注册到 Pi，并和普通 Pi tool call 一样出现在
 session entries 与 SSE 事件中。
 
-认证值不经 API 保存。先在 `.env` 中配置 `MCP_*` 变量后重新拉起 sandbox，例如：
+认证值不经 API 保存。将 `MCP_*` 变量放入独立的 `.sandbox.env`（可从
+`.sandbox.env.example` 复制），并在启动时显式传入，例如：
 
 ```dotenv
 MCP_CONTEXT7_TOKEN=replace-me
+```
+
+重建 sandbox 时显式传入该文件：
+
+```bash
+./scripts/up.sh alice --mcp-env-file .sandbox.env
 ```
 
 然后创建一个 MCP Server。Header 模板只能引用 `MCP_*` 变量，因此不会读取 bridge token 或
@@ -251,9 +390,9 @@ idle Pi 生效。更新 Server 定义不会中断运行中的 Pi，所有已绑�
 prompt 前使用新快照。若缺少 Header 模板引用的环境变量，prompt 返回
 `422 mcp_environment_missing`。正在被绑定的 Server 不能删除，需先解绑。
 
-默认 MCP URL 必须为 HTTPS。仅在可信内网开发服务确实使用 HTTP 时，才在 `.env` 设置
-`MCP_ALLOW_INSECURE_HTTP=1` 后重建 sandbox。通过 OpenSandbox `networkPolicy` 限制出网时，
-还需允许 MCP 域名、DNS 与模型供应商域名。
+默认 MCP URL 必须为 HTTPS。仅在可信内网开发服务确实使用 HTTP 时，才在 `.sandbox.env` 设置
+`MCP_ALLOW_INSECURE_HTTP=1` 后重建 sandbox。模型供应商域名不应配置给 Pi：模型请求只会经
+Docker 私网中的 LiteLLM 转发。
 
 其他控制命令：
 
@@ -385,19 +524,14 @@ curl -sS -X DELETE "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/system-prompt" \
 
 ## 网络策略
 
-默认不传 `networkPolicy`，sandbox 可正常访问模型 API 和其他公网 HTTP 服务。可传
-OpenSandbox egress policy JSON：
+Sandbox 与 LiteLLM 处于同一个 Docker 私网，模型供应商 API 密钥不会进入 sandbox；Pi 只能使用
+它自己的 LiteLLM virtual key。LiteLLM 管理/调试端口仅发布到宿主机 `127.0.0.1:4000`；sandbox
+仍只通过私网访问 `litellm:4000`。每个 sandbox 拿到的 virtual key 仅允许项目模型白名单、24 小时
+有效、总预算 $5；停止或销毁时会立即吊销。
 
-```bash
-./scripts/up.sh alice \
-  --env-file ./.env \
-  --provider anthropic \
-  --model claude-sonnet-4-20250514 \
-  --network-policy ./network-policy.json
-```
-
-策略格式由 OpenSandbox 的 `networkPolicy` API 定义。使用 deny/default-deny 策略时，
-记得同时允许模型供应商域名、DNS 及 Agent 实际需要访问的依赖源。
+OpenSandbox v0.2.2 的 Docker 后端不能在自定义 Docker network 上同时启用 `networkPolicy`。
+因此当前版本不在创建请求中提交该策略；若需要强制域名级 egress 白名单，应在宿主机防火墙、专用
+egress proxy，或支持该组合的 OpenSandbox 运行时中实施。
 
 ## 本地开发
 
@@ -412,8 +546,7 @@ uv run pytest
 
 ```bash
 export BRIDGE_API_TOKEN=dev-secret
-export PI_DEFAULT_PROVIDER=anthropic
-export PI_DEFAULT_MODEL=claude-sonnet-4-20250514
+export PI_DEFAULT_MODEL=coding-default
 uv run pi-opensandbox-runner
 ```
 

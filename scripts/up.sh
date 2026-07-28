@@ -8,10 +8,8 @@ usage() {
 Usage: scripts/up.sh NAME [options]
 
 Options:
-  --env-file PATH          Add provider/API environment variables
-  --provider NAME          Default Pi provider
-  --model NAME             Default Pi model
-  --network-policy PATH    OpenSandbox networkPolicy JSON
+  --model NAME             LiteLLM model alias (default: coding-default)
+  --mcp-env-file PATH      Optional MCP_* credentials injected into sandbox
   --mirror-mode MODE       auto, cn, or global (default: auto)
   --show-token             Print the bridge bearer token (unsafe in CI logs)
   --cpu VALUE              CPU limit (default: 2)
@@ -32,20 +30,16 @@ NAME="$1"
 shift
 validate_name "$NAME"
 
-ENV_FILE=""
-PROVIDER=""
-MODEL=""
-NETWORK_POLICY=""
+MODEL="coding-default"
+MCP_ENV_FILE=""
 MIRROR_MODE_VALUE="${MIRROR_MODE:-auto}"
 SHOW_TOKEN=false
 CPU="2"
 MEMORY="4Gi"
 while (($#)); do
   case "$1" in
-    --env-file) ENV_FILE="$2"; shift 2 ;;
-    --provider) PROVIDER="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
-    --network-policy) NETWORK_POLICY="$2"; shift 2 ;;
+    --mcp-env-file) MCP_ENV_FILE="$2"; shift 2 ;;
     --mirror-mode) MIRROR_MODE_VALUE="$2"; shift 2 ;;
     --show-token) SHOW_TOKEN=true; shift ;;
     --cpu) CPU="$2"; shift 2 ;;
@@ -60,26 +54,25 @@ case "$MIRROR_MODE_VALUE" in
   *) echo "--mirror-mode must be auto, cn, or global." >&2; exit 2 ;;
 esac
 
-if [[ -n "$ENV_FILE" && ! -f "$ENV_FILE" ]]; then
-  echo "Environment file not found: $ENV_FILE" >&2
+require_litellm_env
+if [[ -n "$MCP_ENV_FILE" && ! -f "$MCP_ENV_FILE" ]]; then
+  echo "MCP environment file not found: $MCP_ENV_FILE" >&2
   exit 2
 fi
-if [[ -n "$NETWORK_POLICY" && ! -f "$NETWORK_POLICY" ]]; then
-  echo "Network policy not found: $NETWORK_POLICY" >&2
-  exit 2
-fi
-if [[ -n "$PROVIDER" || -n "$MODEL" ]] && [[ -z "$PROVIDER" || -z "$MODEL" ]]; then
-  echo "--provider and --model must be supplied together." >&2
+if ! jq -e --arg model "$MODEL" \
+  '.providers.litellm.models[] | select(.id == $model)' \
+  "$PROJECT_DIR/config/pi-models.json" >/dev/null; then
+  echo "Unknown LiteLLM model alias: $MODEL" >&2
   exit 2
 fi
 
 ensure_server_config
-docker compose --project-directory "$PROJECT_DIR" up --detach --build
+if ! docker image inspect pi-opensandbox-runner-opensandbox:local >/dev/null 2>&1; then
+  docker compose --project-directory "$PROJECT_DIR" build opensandbox
+fi
+docker compose --project-directory "$PROJECT_DIR" up --detach --no-build
 wait_for_server
-docker build \
-  --build-arg "MIRROR_MODE=${MIRROR_MODE_VALUE}" \
-  --tag "$BRIDGE_IMAGE" \
-  "$PROJECT_DIR"
+wait_for_litellm
 
 STATE_FILE="$(state_file "$NAME")"
 if [[ -f "$STATE_FILE" ]]; then
@@ -94,50 +87,67 @@ if [[ -f "$STATE_FILE" ]]; then
     fi
     exit 0
   fi
+  STALE_KEY="$(jq -r '.litellm_virtual_key // empty' "$STATE_FILE")"
+  if [[ -n "$STALE_KEY" ]]; then
+    block_litellm_key "$STALE_KEY" || {
+      echo "Could not revoke stale LiteLLM key for '$NAME'; retry down before creating a new sandbox." >&2
+      exit 1
+    }
+    UPDATED="$(mktemp "${RUNTIME_DIR}/${NAME}.XXXXXX")"
+    jq 'del(.litellm_virtual_key, .litellm_revocation_pending)' "$STATE_FILE" >"$UPDATED"
+    chmod 600 "$UPDATED"
+    mv "$UPDATED" "$STATE_FILE"
+  fi
 fi
 
-USER_ENV='{}'
-if [[ -n "$ENV_FILE" ]]; then
+# Rebuilding a shared Docker tag discards the image metadata that OpenSandbox
+# needs to inspect already-running sandboxes. Build only for first use; image
+# updates are an explicit deployment operation, after affected sandboxes stop.
+if ! docker image inspect "$BRIDGE_IMAGE" >/dev/null 2>&1; then
+  docker build \
+    --build-arg "MIRROR_MODE=${MIRROR_MODE_VALUE}" \
+    --tag "$BRIDGE_IMAGE" \
+    "$PROJECT_DIR"
+fi
+
+KEY_ALIAS="pi-runner-${NAME}-$(openssl rand -hex 4)"
+KEY_REQUEST="$(jq -n --arg model "$MODEL" --arg key_alias "$KEY_ALIAS" --arg name "$NAME" \
+  '{models: [$model], duration: "24h", max_budget: 5, max_parallel_requests: 2,
+    rpm_limit: 30, tpm_limit: 1000000, key_alias: $key_alias,
+    metadata: {sandbox_name: $name}}')"
+KEY_RESPONSE="$(litellm_admin POST /key/generate "$KEY_REQUEST")"
+LITELLM_KEY="$(jq -er '.key // .token' <<<"$KEY_RESPONSE")"
+
+MCP_ENV='{}'
+if [[ -n "$MCP_ENV_FILE" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    if [[ "$line" != *=* ]]; then
-      echo "Invalid environment line: $line" >&2
-      exit 2
-    fi
+    [[ "$line" == *=* ]] || { echo "Invalid MCP environment line: $line" >&2; exit 2; }
     key="${line%%=*}"
     value="${line#*=}"
-    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      echo "Invalid environment key: $key" >&2
+    [[ "$key" =~ ^MCP_([A-Za-z0-9_]+)$ ]] || {
+      echo "Only MCP_* variables may be injected from --mcp-env-file." >&2
       exit 2
-    fi
-    USER_ENV="$(jq --arg key "$key" --arg value "$value" \
-      '. + {($key): $value}' <<<"$USER_ENV")"
-  done <"$ENV_FILE"
+    }
+    MCP_ENV="$(jq --arg key "$key" --arg value "$value" '. + {($key): $value}' <<<"$MCP_ENV")"
+  done <"$MCP_ENV_FILE"
 fi
 
 BRIDGE_TOKEN="$(openssl rand -hex 32)"
 INTERNAL_ENV="$(jq -n \
   --arg token "$BRIDGE_TOKEN" \
-  --arg provider "$PROVIDER" \
   --arg model "$MODEL" \
+  --arg litellm_key "$LITELLM_KEY" \
   '{
     BRIDGE_API_TOKEN: $token,
+    LITELLM_VIRTUAL_KEY: $litellm_key,
     HOME: "/root",
     PI_CODING_AGENT_SESSION_DIR: "/root/.pi/agent/sessions",
     BRIDGE_STATE_ROOT: "/root/.pi/bridge",
     PI_WORKSPACE_ROOT: "/root/workspace"
   }
-  + (if $provider == "" then {} else {
-      PI_DEFAULT_PROVIDER: $provider,
-      PI_DEFAULT_MODEL: $model
-    } end)')"
-ENV_JSON="$(jq -n --argjson user "$USER_ENV" --argjson internal "$INTERNAL_ENV" \
-  '$user + $internal')"
-
-NETWORK_JSON='null'
-if [[ -n "$NETWORK_POLICY" ]]; then
-  NETWORK_JSON="$(jq -c . "$NETWORK_POLICY")"
-fi
+  + {PI_DEFAULT_MODEL: $model}')"
+ENV_JSON="$(jq -n --argjson mcp "$MCP_ENV" --argjson internal "$INTERNAL_ENV" '$mcp + $internal')"
 
 PAYLOAD="$(jq -n \
   --arg image "$BRIDGE_IMAGE" \
@@ -147,10 +157,9 @@ PAYLOAD="$(jq -n \
   --arg pi_volume "pi-runner-${NAME}-pi" \
   --arg workspace_volume "pi-runner-${NAME}-workspace" \
   --argjson env "$ENV_JSON" \
-  --argjson network "$NETWORK_JSON" \
   '{
     image: {uri: $image},
-    entrypoint: ["python", "-m", "pi_opensandbox_runner"],
+    entrypoint: ["/usr/local/bin/pi-runner-entrypoint"],
     timeout: null,
     resourceLimits: {cpu: $cpu, memory: $memory},
     env: $env,
@@ -175,7 +184,7 @@ PAYLOAD="$(jq -n \
         mountPath: "/root/workspace"
       }
     ]
-  } + (if $network == null then {} else {networkPolicy: $network} end)')"
+  }')"
 
 CREATE_RESPONSE="$(api POST /v1/sandboxes \
   --header "Content-Type: application/json" \
@@ -185,6 +194,9 @@ SANDBOX_RECORDED=false
 cleanup_unrecorded_sandbox() {
   if [[ "$SANDBOX_RECORDED" == false && -n "${SANDBOX_ID:-}" ]]; then
     api DELETE "/v1/sandboxes/${SANDBOX_ID}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${LITELLM_KEY:-}" ]]; then
+    block_litellm_key "$LITELLM_KEY" || true
   fi
 }
 trap cleanup_unrecorded_sandbox ERR
@@ -227,6 +239,7 @@ jq -n \
   --arg sandbox_id "$SANDBOX_ID" \
   --arg bridge_url "$BRIDGE_URL" \
   --arg bridge_token "$BRIDGE_TOKEN" \
+  --arg litellm_key "$LITELLM_KEY" \
   --arg pi_volume "pi-runner-${NAME}-pi" \
   --arg workspace_volume "pi-runner-${NAME}-workspace" \
   '{
@@ -234,6 +247,8 @@ jq -n \
     sandbox_id: $sandbox_id,
     bridge_url: $bridge_url,
     bridge_token: $bridge_token,
+    litellm_virtual_key: $litellm_key,
+    litellm_revocation_pending: false,
     pi_volume: $pi_volume,
     workspace_volume: $workspace_volume
   }' >"$STATE_FILE"
