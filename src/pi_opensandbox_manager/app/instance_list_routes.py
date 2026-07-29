@@ -28,7 +28,8 @@ def register_instance_list_routes(
                 "失败排查和孤儿资源核对；不会返回其他 consumer 的记录或任何运行凭据。\n\n"
                 "结果固定按 `created_at DESC, id DESC` 排序。首次请求省略 cursor，后续把响应中的 "
                 "`next_cursor` 原样传回；cursor 是不透明实现细节，不要解析、拼接或长期保存。"
-                "可以按精确 `state` 和 `policy_slug` 筛选，翻页期间应保持筛选条件不变。\n\n"
+                "可以用 `q` 对 `subject_ref` 做不区分大小写的包含搜索，也可以按精确 `state` 和 "
+                "`policy_slug` 筛选；多个条件按 AND 组合，翻页期间应保持筛选条件不变。\n\n"
                 "需要 service token 的 `instances:read` scope。最大每页 500 条。"
             ),
             tag="Instance（运行实例）",
@@ -69,6 +70,13 @@ def register_instance_list_routes(
             max_length=120,
             description="精确筛选当前应用的 Policy slug。",
         ),
+        q: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=160,
+            pattern=r".*\S.*",
+            description="对 subject_ref 做不区分大小写的包含搜索。",
+        ),
         caller: Principal = Depends(service_principal),
     ) -> InstancePage:
         caller.require("instances:read")
@@ -78,6 +86,10 @@ def register_instance_list_routes(
             statement = select(RunnerInstance).where(
                 RunnerInstance.consumer_id == caller.consumer_id
             )
+            if q is not None:
+                statement = statement.where(
+                    RunnerInstance.subject_ref.icontains(q.strip(), autoescape=True)
+                )
             if state_filter is not None:
                 statement = statement.where(RunnerInstance.state == state_filter)
             if policy_slug is not None:
@@ -122,4 +134,3 @@ def register_instance_list_routes(
                 next_cursor=next_cursor,
                 has_more=has_more,
             )
-

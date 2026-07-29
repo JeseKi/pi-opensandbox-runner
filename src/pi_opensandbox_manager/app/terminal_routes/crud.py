@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Query, Response
@@ -112,8 +112,10 @@ def register_terminal_crud_routes(
         **api_doc(
             summary="分页列出 Terminal",
             description=(
-                "列出当前 consumer 的 Instance Terminal，固定按创建时间倒序排列。"
-                "需要 `terminals:access` scope。"
+                "列出当前 consumer 的 Instance Terminal，固定按创建时间倒序排列。可选 "
+                "`session_id` 在数据库查询阶段筛选绑定到指定 external Session 的 Terminal；"
+                "Session 不存在时返回 `404 session_not_found`。可选 `state` 精确筛选 Terminal "
+                "状态；多个条件按 AND 组合。需要 `terminals:access` scope。"
             ),
             tag="Terminal（交互终端）",
             operation_id="list_manager_terminals",
@@ -122,6 +124,25 @@ def register_terminal_crud_routes(
     )
     async def list_terminals(
         subject_ref: str,
+        session_id: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=120,
+            description="可选 external Session ID；提供后只返回绑定到该 Session 的 Terminal。",
+        ),
+        state_filter: Literal[
+            "created",
+            "connected",
+            "detached",
+            "exited",
+            "closed",
+            "unavailable",
+        ]
+        | None = Query(
+            default=None,
+            alias="state",
+            description="精确筛选 Terminal 状态。",
+        ),
         cursor: str | None = Query(default=None, min_length=1, max_length=1024),
         limit: int = Query(default=100, ge=1, le=500),
         caller: Principal = Depends(service_dependency),
@@ -133,6 +154,20 @@ def register_terminal_crud_routes(
             statement = select(TerminalBinding).where(
                 TerminalBinding.instance_id == instance.id
             )
+            if session_id is not None:
+                session_binding = db.scalar(
+                    select(SessionBinding).where(
+                        SessionBinding.instance_id == instance.id,
+                        SessionBinding.external_session_id == session_id,
+                    )
+                )
+                if session_binding is None:
+                    raise ManagerProblem(404, "session_not_found", "session not found")
+                statement = statement.where(
+                    TerminalBinding.session_binding_id == session_binding.id
+                )
+            if state_filter is not None:
+                statement = statement.where(TerminalBinding.state == state_filter)
             if position is not None:
                 statement = statement.where(
                     or_(

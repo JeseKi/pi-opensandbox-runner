@@ -217,7 +217,7 @@ def test_list_instances_is_paginated_filtered_and_consumer_scoped(tmp_path: Path
     app = create_manager_app(configured, database)
     headers = {"Authorization": "Bearer rm_svc_test"}
     with TestClient(app) as client:
-        first = client.get("/v1/instances?limit=2", headers=headers)
+        first = client.get("/v1/instances?limit=2&q=USER", headers=headers)
         assert first.status_code == 200
         assert [item["subject_ref"] for item in first.json()["items"]] == [
             "user-3",
@@ -228,7 +228,7 @@ def test_list_instances_is_paginated_filtered_and_consumer_scoped(tmp_path: Path
 
         second = client.get(
             "/v1/instances",
-            params={"limit": 2, "cursor": first.json()["next_cursor"]},
+            params={"limit": 2, "q": "USER", "cursor": first.json()["next_cursor"]},
             headers=headers,
         )
         assert second.status_code == 200
@@ -244,13 +244,24 @@ def test_list_instances_is_paginated_filtered_and_consumer_scoped(tmp_path: Path
         ]
 
         policy_filtered = client.get(
-            "/v1/instances?policy_slug=consumer-default",
+            "/v1/instances?policy_slug=consumer-default&q=Er-2",
             headers=headers,
         )
-        assert len(policy_filtered.json()["items"]) == 3
-        assert all(
-            item["subject_ref"] != "other-user" for item in policy_filtered.json()["items"]
-        )
+        assert [item["subject_ref"] for item in policy_filtered.json()["items"]] == [
+            "user-2"
+        ]
+
+        literal_wildcard = client.get("/v1/instances?q=%25_", headers=headers)
+        assert literal_wildcard.status_code == 200
+        assert literal_wildcard.json()["items"] == []
+
+        blank_search = client.get("/v1/instances", params={"q": "   "}, headers=headers)
+        assert blank_search.status_code == 422
+        assert blank_search.json()["code"] == "validation_error"
+
+        long_search = client.get("/v1/instances", params={"q": "x" * 161}, headers=headers)
+        assert long_search.status_code == 422
+        assert long_search.json()["code"] == "validation_error"
 
         invalid = client.get("/v1/instances?cursor=not-a-cursor", headers=headers)
         assert invalid.status_code == 422
@@ -327,7 +338,7 @@ def test_list_sessions_is_paginated_filtered_and_consumer_scoped(tmp_path: Path)
     headers = {"Authorization": "Bearer rm_svc_test"}
     with TestClient(app) as client:
         first = client.get(
-            "/v1/instances/user-sessions/sessions?limit=2",
+            "/v1/instances/user-sessions/sessions?limit=2&q=SESSION",
             headers=headers,
         )
         assert first.status_code == 200
@@ -339,7 +350,11 @@ def test_list_sessions_is_paginated_filtered_and_consumer_scoped(tmp_path: Path)
 
         second = client.get(
             "/v1/instances/user-sessions/sessions",
-            params={"limit": 2, "cursor": first.json()["next_cursor"]},
+            params={
+                "limit": 2,
+                "q": "SESSION",
+                "cursor": first.json()["next_cursor"],
+            },
             headers=headers,
         )
         assert second.status_code == 200
@@ -357,10 +372,33 @@ def test_list_sessions_is_paginated_filtered_and_consumer_scoped(tmp_path: Path)
         ]
 
         model_filtered = client.get(
-            "/v1/instances/user-sessions/sessions?model_slug=other-model",
+            "/v1/instances/user-sessions/sessions?model_slug=other-model&q=ION+2",
             headers=headers,
         )
         assert [item["id"] for item in model_filtered.json()["items"]] == ["session-2"]
+
+        title_filtered = client.get(
+            "/v1/instances/user-sessions/sessions",
+            params={"q": "sEsSiOn 3"},
+            headers=headers,
+        )
+        assert [item["id"] for item in title_filtered.json()["items"]] == ["session-3"]
+
+        literal_wildcard = client.get(
+            "/v1/instances/user-sessions/sessions",
+            params={"q": "%_"},
+            headers=headers,
+        )
+        assert literal_wildcard.status_code == 200
+        assert literal_wildcard.json()["items"] == []
+
+        blank_search = client.get(
+            "/v1/instances/user-sessions/sessions",
+            params={"q": "   "},
+            headers=headers,
+        )
+        assert blank_search.status_code == 422
+        assert blank_search.json()["code"] == "validation_error"
 
         other = client.get(
             "/v1/instances/other-user-sessions/sessions",
@@ -514,6 +552,46 @@ def test_manager_terminal_lifecycle_and_one_time_ticket(
         terminal = created.json()
         assert terminal["cwd"] == "/root/workspace/sessions/session-1"
         assert len(terminal["warnings"]) == 2
+
+        root_terminal = client.post(
+            "/v1/instances/terminal-user/terminals",
+            headers=headers,
+            json={},
+        )
+        assert root_terminal.status_code == 201
+
+        filtered = client.get(
+            "/v1/instances/terminal-user/terminals",
+            headers=headers,
+            params={"session_id": "session-1", "state": "created"},
+        )
+        assert filtered.status_code == 200
+        assert [item["id"] for item in filtered.json()["items"]] == [terminal["id"]]
+        assert filtered.json()["has_more"] is False
+
+        closed = client.get(
+            "/v1/instances/terminal-user/terminals",
+            headers=headers,
+            params={"state": "closed"},
+        )
+        assert closed.status_code == 200
+        assert closed.json()["items"] == []
+
+        invalid_state = client.get(
+            "/v1/instances/terminal-user/terminals",
+            headers=headers,
+            params={"state": "invalid"},
+        )
+        assert invalid_state.status_code == 422
+        assert invalid_state.json()["code"] == "validation_error"
+
+        missing_session = client.get(
+            "/v1/instances/terminal-user/terminals",
+            headers=headers,
+            params={"session_id": "missing-session"},
+        )
+        assert missing_session.status_code == 404
+        assert missing_session.json()["code"] == "session_not_found"
 
         status = client.get(
             f"/v1/instances/terminal-user/terminals/{terminal['id']}",

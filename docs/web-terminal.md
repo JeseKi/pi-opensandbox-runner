@@ -64,6 +64,17 @@ TERMINAL="$(
 TERMINAL_ID="$(jq -r .id <<<"$TERMINAL")"
 ```
 
+同一外部 Session 的 Terminal 可以用 Manager 的数据库级筛选分页查询：
+
+```bash
+curl -sS \
+  "$MANAGER_URL/v1/instances/user-1/terminals?session_id=session-1&state=created&limit=100" \
+  -H "$AUTH" | jq
+```
+
+`session_id` 不存在时返回 `404 session_not_found`；`state` 对 Terminal 状态做精确筛选，
+并与 `session_id` 按 AND 组合。使用 `next_cursor` 翻页时必须保持所有筛选条件不变。
+
 完成最终用户授权后，后端为浏览器页面的精确 Origin 签发 ticket：
 
 ```bash

@@ -44,7 +44,9 @@ def register_session_routes(
                 "`state` 可能短暂滞后。需要准确状态时调用单 Session GET，该接口会刷新 Bridge 状态。"
                 "已通过 DELETE 删除绑定的 Session 不会出现在列表中。\n\n"
                 "结果固定按 `created_at DESC, id DESC` 排序。首次请求省略 cursor，后续把 "
-                "`next_cursor` 原样传回，并保持 `state`、`model_slug` 筛选条件不变。"
+                "`next_cursor` 原样传回。可以用 `q` 对 Session ID 和标题做不区分大小写的"
+                "包含搜索，也可以按精确 `state`、`model_slug` 筛选；多个条件按 AND 组合，"
+                "翻页期间应保持所有筛选条件不变。"
                 "Instance 即使 stopped、destroyed 或 failed 仍可读取历史绑定快照。\n\n"
                 "需要 service token 的 `sessions:read` scope；最大每页 500 条。"
             ),
@@ -79,6 +81,13 @@ def register_session_routes(
             max_length=120,
             description="精确筛选 Session 使用的 model slug。",
         ),
+        q: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=160,
+            pattern=r".*\S.*",
+            description="对 Session ID 和标题做不区分大小写的包含搜索。",
+        ),
         caller: Principal = Depends(service_principal),
     ) -> SessionPage:
         caller.require("sessions:read")
@@ -88,6 +97,16 @@ def register_session_routes(
             statement = select(SessionBinding).where(
                 SessionBinding.instance_id == instance.id
             )
+            if q is not None:
+                search_query = q.strip()
+                statement = statement.where(
+                    or_(
+                        SessionBinding.external_session_id.icontains(
+                            search_query, autoescape=True
+                        ),
+                        SessionBinding.title.icontains(search_query, autoescape=True),
+                    )
+                )
             if state_filter is not None:
                 statement = statement.where(SessionBinding.state == state_filter)
             if model_slug is not None:

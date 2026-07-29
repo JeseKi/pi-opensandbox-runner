@@ -44,12 +44,13 @@ GET /v1/catalog/policies
 分页列出当前 consumer 的 Instance：
 
 ```bash
-curl -sS "$MANAGER_URL/v1/instances?limit=100&state=ready" \
+curl -sS "$MANAGER_URL/v1/instances?limit=100&state=ready&q=user" \
   -H "$AUTH" | jq
 ```
 
 结果按 `created_at DESC, id DESC` 排序。后续请求原样传回 `next_cursor`，并保持
-`state`、`policy_slug` 等筛选条件不变。service token 只能看到所属 consumer 的 Instance；
+`q`、`state`、`policy_slug` 等筛选条件不变。`q` 对 `subject_ref` 做不区分大小写的
+包含搜索，多个筛选条件按 AND 组合。service token 只能看到所属 consumer 的 Instance；
 游标是不透明实现细节，调用方不能解析或拼接。
 
 ```bash
@@ -115,9 +116,12 @@ Session ID 由 consumer 生成，并在目标 Instance 内唯一：
 
 ```bash
 curl -sS \
-  "$MANAGER_URL/v1/instances/user-1/sessions?limit=100&state=ready" \
+  "$MANAGER_URL/v1/instances/user-1/sessions?limit=100&state=ready&q=repair" \
   -H "$AUTH" | jq
 ```
+
+Session 列表的 `q` 会对 Session ID 和标题做不区分大小写的包含搜索，并与 `state`、
+`model_slug` 按 AND 组合。使用 `next_cursor` 翻页时必须保持所有筛选条件不变。
 
 Session 列表使用不透明 cursor 分页，并可按 `state`、`model_slug` 精确筛选。列表只读取
 Manager 数据库快照，不逐个调用 Bridge，因此状态可能短暂滞后；需要准确状态时使用下面的单
@@ -216,12 +220,17 @@ Manager 可以为 ready Instance 创建独立 PTY，并向已经完成最终用�
 
 ```http
 POST   /v1/instances/{subject_ref}/terminals
-GET    /v1/instances/{subject_ref}/terminals
+GET    /v1/instances/{subject_ref}/terminals?session_id={session_id}&state=created&cursor=...&limit=100
 GET    /v1/instances/{subject_ref}/terminals/{terminal_id}
 DELETE /v1/instances/{subject_ref}/terminals/{terminal_id}
 POST   /v1/instances/{subject_ref}/terminals/{terminal_id}/tickets
 WS     /v1/terminal-connections
 ```
+
+列表的 `session_id` 为可选 external Session ID。提供后，Manager 会在数据库分页查询阶段只
+返回绑定到该 Session 的 Terminal；Session 不存在时返回 `404 session_not_found`。`state`
+精确筛选 Terminal 状态，并与 `session_id` 按 AND 组合。使用 `next_cursor` 翻页时必须保持
+所有筛选条件不变。
 
 这些 REST API 需要 `terminals:access` scope。浏览器只连接最后一个 WebSocket 路径，并通过
 Sec-WebSocket-Protocol 提交 ticket；不能把 service token 交给浏览器。Terminal 与 Agent
