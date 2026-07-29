@@ -17,6 +17,7 @@ class UpstreamProblem(Exception):
     code: str
     detail: str
     retry_after: str | None = None
+    extra: dict[str, Any] | None = None
 
     @property
     def retryable(self) -> bool:
@@ -37,11 +38,25 @@ def _problem(response: httpx.Response) -> UpstreamProblem:
     else:
         code = body.get("code")
         message = detail or body.get("message")
+    known = {
+        "type",
+        "title",
+        "status",
+        "detail",
+        "instance",
+        "code",
+        "request_id",
+        "component",
+        "retryable",
+        "errors",
+        "message",
+    }
     return UpstreamProblem(
         response.status_code,
         str(code or "upstream_request_failed"),
         str(message or response.text or f"upstream HTTP {response.status_code}"),
         response.headers.get("Retry-After"),
+        {key: value for key, value in body.items() if key not in known},
     )
 
 
@@ -312,4 +327,5 @@ def as_manager_problem(exc: UpstreamProblem) -> ManagerProblem:
         exc.detail,
         retryable=exc.retryable,
         component="runner-upstream",
+        extra=exc.extra,
     )

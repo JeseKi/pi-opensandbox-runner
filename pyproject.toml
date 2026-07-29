@@ -17,8 +17,8 @@ dependencies = [
 
 [project.scripts]
 pi-opensandbox-runner = "pi_opensandbox_runner.__main__:main"
-pi-runner-manager = "pi_opensandbox_runner.manager.__main__:main"
-pi-runner-manager-cli = "pi_opensandbox_runner.manager.cli:main"
+pi-runner-manager = "pi_opensandbox_manager.__main__:main"
+pi-runner-manager-cli = "pi_opensandbox_manager.cli:main"
 
 [dependency-groups]
 dev = [
@@ -34,7 +34,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pi_opensandbox_runner"]
+packages = ["src/pi_opensandbox_runner", "src/pi_opensandbox_manager"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -48,7 +48,7 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/pi_opensandbox_runner/manager/app.py" = ["B008"]
+"src/pi_opensandbox_manager/app.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.13"

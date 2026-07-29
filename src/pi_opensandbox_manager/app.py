@@ -27,7 +27,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
-from ..schemas import CommandCreate
 from .clients import BridgeClient, UpstreamProblem, as_manager_problem
 from .config import ManagerSettings
 from .crypto import CredentialCipher
@@ -46,6 +45,7 @@ from .schemas import (
     AcceptedOperation,
     AdminModelCreate,
     AdminPolicyCreate,
+    CommandCreate,
     EventOut,
     EventPage,
     InstanceEnsure,
@@ -1197,6 +1197,8 @@ def _event_out(value: dict[str, Any], session_id: str, turn_id: str | None) -> E
         occurred_at=str(value.get("timestamp") or datetime.now(UTC).isoformat()),
         type=str(data.get("type") or f"{value.get('source', 'runner')}.event"),
         data=data,
+        source=str(value.get("source") or "runner"),
+        raw=value,
     )
 
 

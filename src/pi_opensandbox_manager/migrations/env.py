@@ -3,8 +3,8 @@ from __future__ import annotations
 from alembic import context
 from sqlalchemy import Connection, Engine, engine_from_config, pool
 
-from pi_opensandbox_runner.manager import models as _models  # noqa: F401
-from pi_opensandbox_runner.manager.database import Base
+from pi_opensandbox_manager import models as _models  # noqa: F401
+from pi_opensandbox_manager.database import Base
 
 config = context.config
 target_metadata = Base.metadata

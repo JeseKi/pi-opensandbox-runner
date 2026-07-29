@@ -8,7 +8,7 @@ from .config import ManagerSettings
 def main() -> None:
     settings = ManagerSettings.from_env()
     uvicorn.run(
-        "pi_opensandbox_runner.manager.app:create_manager_app",
+        "pi_opensandbox_manager.app:create_manager_app",
         factory=True,
         host=settings.host,
         port=settings.port,

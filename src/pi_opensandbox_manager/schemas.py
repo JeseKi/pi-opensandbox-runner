@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProblemOut(BaseModel):
@@ -167,6 +167,32 @@ class SessionPage(BaseModel):
     has_more: bool = Field(description="是否还有下一页。")
 
 
+class CommandCreate(BaseModel):
+    command: str = Field(
+        min_length=1, max_length=100_000, description="在容器内执行的非空 shell 命令。"
+    )
+    cwd: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4096,
+        description="命令工作目录；未设置时由 OpenSandbox 决定。",
+    )
+    timeout: int | None = Field(
+        default=None, ge=1, le=86_400_000, description="超时毫秒数，最大 24 小时。"
+    )
+    background: bool = Field(default=False, description="true 时后台执行，使用状态和日志接口查询。")
+    envs: dict[str, str] | None = Field(default=None, description="传给命令的环境变量。")
+    uid: int | None = Field(default=None, ge=0, description="可选执行用户 UID。")
+    gid: int | None = Field(default=None, ge=0, description="可选执行用户 GID。")
+
+    @field_validator("command")
+    @classmethod
+    def clean_command(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("command cannot be blank")
+        return value
+
+
 class TurnSubmit(BaseModel):
     input: str = Field(
         min_length=1,
@@ -196,12 +222,19 @@ class TurnOut(BaseModel):
 
 class EventOut(BaseModel):
     protocol_version: Literal[1] = Field(default=1, description="Manager 事件协议版本。")
-    seq: int = Field(description="Session 内递增事件序号；调用方应以此去重。")
+    seq: int = Field(description="bridge journal 的原始递增事件序号；调用方应以此去重。")
     session_id: str = Field(description="事件所属的外部 Session ID。")
     turn_id: str | None = Field(description="事件所属的外部 Turn ID；无法归属时为 null。")
     occurred_at: str = Field(description="事件发生时间，ISO 8601 字符串。")
     type: str = Field(description="事件类型；新增类型时调用方应保持向前兼容。")
     data: dict[str, Any] = Field(description="事件类型对应的载荷。")
+    source: str = Field(description="journal 事件来源，例如 pi 或 bridge。")
+    raw: dict[str, Any] = Field(
+        description=(
+            "未改写的完整 journal envelope，包含 seq、timestamp、source 与 event；"
+            "用于审计与未知事件的向前兼容处理。"
+        )
+    )
 
 
 class EventPage(BaseModel):

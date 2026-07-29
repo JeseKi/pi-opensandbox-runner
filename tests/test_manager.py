@@ -7,21 +7,21 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from pi_opensandbox_runner.manager.app import create_manager_app
-from pi_opensandbox_runner.manager.clients import OpenSandboxClient
-from pi_opensandbox_runner.manager.config import ManagerSettings
-from pi_opensandbox_runner.manager.crypto import CredentialCipher
-from pi_opensandbox_runner.manager.database import ManagerDatabase
-from pi_opensandbox_runner.manager.models import (
+from pi_opensandbox_manager.app import _event_out, create_manager_app
+from pi_opensandbox_manager.clients import OpenSandboxClient
+from pi_opensandbox_manager.config import ManagerSettings
+from pi_opensandbox_manager.crypto import CredentialCipher
+from pi_opensandbox_manager.database import ManagerDatabase
+from pi_opensandbox_manager.models import (
     Consumer,
     ManagerOperation,
     RunnerInstance,
     RunnerPolicy,
     SessionBinding,
 )
-from pi_opensandbox_runner.manager.schemas import InstanceEnsure
-from pi_opensandbox_runner.manager.security import bootstrap
-from pi_opensandbox_runner.manager.service.short_transactions import (
+from pi_opensandbox_manager.schemas import InstanceEnsure
+from pi_opensandbox_manager.security import bootstrap
+from pi_opensandbox_manager.service.short_transactions import (
     ensure_instance,
     seed_catalog,
 )
@@ -100,6 +100,32 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
         assert schema["components"]["schemas"]["InstanceEnsure"]["properties"]["policy_slug"][
             "description"
         ].startswith("从")
+        command_schema = schema["components"]["schemas"]["CommandCreate"]
+        assert set(command_schema["properties"]) == {
+            "command",
+            "cwd",
+            "timeout",
+            "background",
+            "envs",
+            "uid",
+            "gid",
+        }
+        assert command_schema["properties"]["command"]["maxLength"] == 100_000
+        assert command_schema["properties"]["timeout"]["anyOf"][0]["maximum"] == 86_400_000
+
+
+def test_manager_event_keeps_complete_journal_envelope() -> None:
+    raw = {
+        "seq": 12,
+        "timestamp": "2026-07-30T00:00:00Z",
+        "source": "pi",
+        "event": {"type": "message_end", "request_id": "turn-1", "message": {}},
+    }
+    event = _event_out(raw, "session-1", None)
+    assert event.seq == 12
+    assert event.source == "pi"
+    assert event.raw == raw
+    assert event.turn_id == "turn-1"
 
 
 def test_ensure_instance_and_job_are_idempotent(tmp_path: Path) -> None:

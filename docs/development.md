@@ -85,7 +85,7 @@ Manager 启动时自动执行：
 alembic upgrade head
 ```
 
-migration 位于 `src/pi_opensandbox_runner/manager/migrations/`。需要新增字段时编写新的 Alembic
+migration 位于 `src/pi_opensandbox_manager/migrations/`。需要新增字段时编写新的 Alembic
 revision，不要在运行时代码中执行硬编码 `ALTER TABLE` 或 ensure column。
 
 ## 低层脚本
