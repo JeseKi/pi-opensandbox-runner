@@ -1,5 +1,9 @@
 # 外部 MCP
 
+> MCP 是 Pi Bridge 的底层能力。目前 Runner Manager 没有向 consumer 暴露 MCP 管理接口，
+> `agent-runner` 的 C 端产品也不提供自定义 MCP。本文仅用于 Bridge 开发和未来内部 Policy
+> 集成，不应指导业务系统绕过 Manager 直连 Bridge。
+
 Pi 通过内置 Extension 使用 MCP。当前支持远程 Streamable HTTP 与兼容 SSE；不支持 stdio、
 浏览器 OAuth、MCP resources、prompts 或 sampling。
 

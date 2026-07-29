@@ -82,7 +82,8 @@ def _verify_bridge_proxy_token(
         return
     token = _bridge_proxy_token(caller_headers)
     actual_hash = (
-        base64.urlsafe_b64encode(hashlib.sha256(token.encode()).digest())
+        "h"
+        + base64.urlsafe_b64encode(hashlib.sha256(token.encode()).digest())
         .decode()
         .rstrip("=")
         if token

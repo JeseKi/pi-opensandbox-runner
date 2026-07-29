@@ -78,6 +78,7 @@ class SessionCreate(BaseModel):
             raise ValueError("mcp_server_ids must not contain duplicates")
         return value
 
+
 class SessionPatch(BaseModel):
     name: str = Field(min_length=1, max_length=120, description="新的非空 Session 显示名称。")
 
@@ -159,8 +160,10 @@ class PromptCreate(BaseModel):
             raise ValueError("message cannot be blank")
         return value
 
+
 class PromptAccepted(BaseModel):
     command_id: str
+    request_id: str
     session_id: str
     delivery: Literal["prompt", "steer", "follow_up"]
 

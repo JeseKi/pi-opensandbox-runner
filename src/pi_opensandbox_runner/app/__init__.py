@@ -185,7 +185,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def ready(request: Request) -> dict[str, str]:
         if not request.app.state.ready:
             raise ApiProblem(503, "not_ready", "bridge is not ready")
-        return {"status": "ready"}
+        return {
+            "status": "ready",
+            "protocol_version": "1",
+            "bridge_version": app.version,
+        }
 
     def document_external_proxy_auth(credentials: ExternalBearerCredentials = None) -> None:
         """Expose proxy authentication in OpenAPI without handling its secret here."""

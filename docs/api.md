@@ -1,4 +1,8 @@
-# HTTP API
+# Bridge API（内部数据面）
+
+> 本文记录运行在单个 sandbox 内的 Pi Bridge 协议。Runner Manager 会封装这些接口；
+> `agent-runner` 和其他业务系统必须使用 [Manager API](manager-api.md)，不得保存 Bridge URL
+> 或 proxy token。本文只用于 Bridge 开发、协议维护和故障排查。
 
 经 OpenSandbox server proxy 调用时，所有 `/v1` Bridge 请求都要带：
 

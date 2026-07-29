@@ -168,7 +168,7 @@ if [[ -n "$MCP_ENV_FILE" ]]; then
 fi
 
 BRIDGE_PROXY_TOKEN="$(openssl rand -hex 32)"
-BRIDGE_PROXY_TOKEN_HASH="$(printf '%s' "$BRIDGE_PROXY_TOKEN" \
+BRIDGE_PROXY_TOKEN_HASH="h$(printf '%s' "$BRIDGE_PROXY_TOKEN" \
   | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
 INTERNAL_ENV="$(jq -n \
   --arg model "$MODEL" \

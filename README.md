@@ -1,151 +1,140 @@
 # Pi OpenSandbox Runner
 
-在一个 OpenSandbox 管理的独立 Docker 容器中运行
-[Pi coding agent](https://github.com/earendil-works/pi)，并通过 HTTP 管理长期存在的
-Pi session。
+Pi OpenSandbox Runner 是内部 Agent Runner Manager。它负责为上层业务系统管理
+OpenSandbox sandbox、LiteLLM virtual key、Runner Policy、持久卷，以及容器内的 Pi Bridge。
 
-这个项目补的是 Pi RPC 与外部 HTTP 之间的桥，而不是 OpenSandbox execd 的替代品：
+`agent-runner` 等业务系统只调用 Manager API，不保存 OpenSandbox API key、LiteLLM master
+key、sandbox ID、Bridge URL 或 Bridge proxy token。
 
-- OpenSandbox 管理容器生命周期、端口、execd、持久卷和出站网络策略。
-- 容器内的 FastAPI bridge 管理多个 `pi --mode rpc` 子进程。
-- LiteLLM 统一代理模型请求，并为每个 sandbox 签发受限的 virtual key。
-- SQLite 保存逻辑 session 目录；Pi JSONL 保存真实对话历史。
-- 分段 NDJSON 日志保存可恢复的 SSE 事件游标。
-- Bridge API 还提供文件浏览、条件写入和命令执行能力。
-
-## 架构概览
-
-调用方只连接 OpenSandbox server proxy，不直接访问 sandbox 中的 Bridge 或 Execd。模型供应商
-密钥始终停留在 LiteLLM 容器中，sandbox 只持有限定模型和预算的 virtual key。
+## 系统边界
 
 ```mermaid
 flowchart LR
-    caller[调用方] -->|Bearer proxy token| proxy[OpenSandbox Server Proxy]
-    proxy --> bridge[FastAPI Bridge]
+    product[agent-runner<br/>C 端产品层] -->|Manager service token| manager[Runner Manager<br/>控制面]
+    manager -->|API key| opensandbox[OpenSandbox]
+    manager -->|master key| litellm[LiteLLM]
+    manager -->|内部 proxy token| bridge[Pi Bridge<br/>sandbox 数据面]
     bridge --> pi[Pi RPC]
-    bridge --> state[(SQLite / JSONL / NDJSON)]
-    bridge --> execd[OpenSandbox Execd]
-    pi -->|LiteLLM virtual key| litellm[LiteLLM]
-    litellm --> model[模型供应商]
+    pi -->|virtual key| litellm
+    manager --> managerdb[(Manager SQLite)]
+    bridge --> volumes[(Pi / Workspace 持久卷)]
 ```
 
-实体关系、持久化文件和完整提示词流转见
-[架构设计](docs/architecture.md)。
+- **Manager** 是唯一面向内部业务系统的稳定边界，负责实例、策略、Session/Turn 映射和运维。
+- **Bridge** 运行在每个 sandbox 内，负责 Pi RPC、事件日志、文件和命令；不属于 C 端公共 API。
+- **OpenSandbox** 管理容器、端口、持久卷和出站网络策略。
+- **LiteLLM** 保存供应商密钥，并为每个 Runner Instance 签发受模型、预算和速率限制的 key。
+- **Manager SQLite** 保存控制面状态；LiteLLM 自己仍使用 PostgreSQL。
 
-## 重要的权限语义
+更完整的职责和实体关系见[架构设计](docs/architecture.md)。
 
-`cwd` 只是 Pi 的初始工作目录，不是权限边界。Pi 以 root 运行，可以读写容器内其他目录；
-真正的隔离边界是 Docker/OpenSandbox 容器。不要向 sandbox 挂载不希望 Agent 访问的宿主机
-路径。
+## 快速启动 Manager
 
-只有 `/root/.pi` 和 `/root/workspace` 默认位于持久卷中。Session 使用其他目录时，目录内容在
-容器删除后不会自动持久化。完整的鉴权、容器权限和网络边界见
-[网络与安全](docs/network-security.md)。
+要求：Linux Docker、Docker Compose、`bash`、`jq`、`openssl` 和 `uv`。
 
-## 快速启动
-
-要求：Linux Docker、Docker Compose、`bash`、`curl`、`jq`、`openssl`。
-
-准备仅供 LiteLLM 网关读取的供应商密钥：
+先准备 LiteLLM 环境：
 
 ```bash
 cp .litellm.env.example .litellm.env
 chmod 600 .litellm.env
 ```
 
-编辑 `.litellm.env`，填写供应商密钥和 LiteLLM master key。该文件不会挂载或注入
-sandbox。然后启动一个名为 `alice` 的实例：
+填写供应商密钥和 `LITELLM_MASTER_KEY`。随后生成 OpenSandbox 配置：
 
 ```bash
-./scripts/up.sh alice \
-  --egress-profile github \
-  --model coding-default
+bash -c 'source scripts/lib.sh; ensure_server_config'
 ```
 
-新 sandbox 必须显式选择至少一个公网 egress profile，或提供自定义域名清单。可用的内置
-profile 为 `github`、`npm-global` 和 `npm-cn`。
-
-脚本会启动 OpenSandbox Server、按需构建镜像、创建持久卷和 sandbox，并把 Bridge URL 与
-外部代理 Bearer token 写入权限为 `0600` 的 `.runtime/alice.json`。
-
-读取连接信息：
+准备 Manager 环境：
 
 ```bash
-BRIDGE_URL="$(jq -r .bridge_url .runtime/alice.json)"
-BRIDGE_PROXY_TOKEN="$(jq -r .bridge_proxy_token .runtime/alice.json)"
-AUTH="Authorization: Bearer ${BRIDGE_PROXY_TOKEN}"
+cp .manager.env.example .manager.env
+chmod 600 .manager.env
 ```
 
-创建 Session：
+`.manager.env` 中：
+
+- `OPENSANDBOX_API_KEY` 必须等于 `.runtime/server.json` 的 `server_api_key`。
+- `LITELLM_MASTER_KEY` 必须与 `.litellm.env` 中的值一致。
+- `RUNNER_MANAGER_CREDENTIAL_ENCRYPTION_KEY` 用于加密 Manager 数据库中的 Bridge 和
+  LiteLLM 凭据，可用 Fernet 生成。
+- service token 供 `agent-runner` 使用；admin token 只供内部管理操作使用。两者都必须非空且
+  使用不同的随机值，否则对应身份不会正确创建。
+
+可以这样生成所需值：
 
 ```bash
-SESSION_ID="$(curl -sS -X POST "${BRIDGE_URL}/v1/sessions" \
-  -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"task-one"}' | jq -r .id)"
+# OPENSANDBOX_API_KEY
+jq -r .server_api_key .runtime/server.json
+
+# RUNNER_MANAGER_CREDENTIAL_ENCRYPTION_KEY
+uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+
+# 分别执行两次，生成不同的 service/admin token
+openssl rand -hex 32
+openssl rand -hex 32
 ```
 
-发送 Prompt：
+构建 Runner 镜像并启动控制面：
 
 ```bash
-curl -sS -X POST "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/prompts" \
-  -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"message":"检查当前项目并介绍它的结构","delivery":"auto"}' | jq
+docker build -t pi-opensandbox-runner:local .
+docker build -f Dockerfile.egress -t pi-runner-egress:local .
+docker compose up -d --build
+curl -fsS http://127.0.0.1:8090/readyz | jq
 ```
 
-请求返回 `202 Accepted`。通过 SSE 读取事件：
+Manager 首次启动会执行 Alembic migration，并在 SQLite 中创建默认
+`coding-default` model、`consumer-default` policy 和 bootstrap consumer。只有配置了非空且
+互不相同的 bootstrap service/admin token 时，才会创建对应 token。
+
+## 接入 agent-runner
+
+`agent-runner` 只需要：
+
+```dotenv
+RUNNER_MANAGER_BASE_URL=http://127.0.0.1:8090
+RUNNER_MANAGER_API_TOKEN=<RUNNER_MANAGER_BOOTSTRAP_SERVICE_TOKEN>
+RUNNER_DEFAULT_POLICY_SLUG=consumer-default
+```
+
+上述地址适用于宿主机联调。同一份 Compose 网络中的服务使用
+`http://manager:8090`；跨 Compose 项目时必须显式连接共享网络并配置可解析的服务名。
+
+实例创建是异步操作。调用方先确保 Instance，轮询 Operation 到终态，再创建 Session 和提交
+Turn。完整请求示例、幂等语义和错误格式见 [Manager API](docs/manager-api.md)。
+
+## 常用非破坏性运维入口
 
 ```bash
-curl -N "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/events?cursor=0" -H "$AUTH"
+uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" status user-1
+uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" reconcile user-1
+uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" stop user-1
 ```
 
-完整接口与更多请求示例见 [HTTP API](docs/api.md)。
-
-## 常用运维命令
-
-```bash
-./scripts/status.sh alice
-./scripts/down.sh alice
-./scripts/up.sh alice --model coding-default
-```
-
-`down.sh` 删除 sandbox，但保留 Pi 历史和 workspace 命名卷；再次 `up.sh` 会恢复它们。
-永久删除数据需要显式确认：
-
-```bash
-./scripts/destroy.sh alice --yes
-```
-
-预算管理、模型热更新、镜像源和旧实例迁移见
+`stop` 和当前的 `destroy` 都会删除 sandbox 并吊销 LiteLLM key，但保留命名持久卷。
+持久卷的最终回收需要单独的卷管理流程。完整命令、参数、退出状态和错误处理见
+[Manager CLI](docs/cli.md)，备份、恢复、策略和故障排查见
 [运行与维护](docs/operations.md)。
 
 ## 文档
 
 - [文档索引](docs/README.md)
 - [架构设计](docs/architecture.md)
+- [Manager API](docs/manager-api.md)
+- [Manager CLI](docs/cli.md)
+- [Bridge API（内部数据面）](docs/api.md)
 - [运行与维护](docs/operations.md)
-- [HTTP API](docs/api.md)
-- [外部 MCP](docs/mcp.md)
 - [网络与安全](docs/network-security.md)
 - [本地开发与集成](docs/development.md)
+- [Bridge MCP 能力](docs/mcp.md)
 
-运行中的 Bridge 也提供 `${BRIDGE_URL}/docs` Swagger UI。实际调用 `/v1` 接口时仍需填写
-Bearer token。
+Manager Swagger 位于 `http://127.0.0.1:8090/v1/docs`。Bridge Swagger 只用于底层调试，不应
+作为业务系统接入入口。
 
-## 本地开发
+## 本地检查
 
 ```bash
 uv sync
-uv run ruff check .
-uv run mypy src
-uv run pytest
+make check
 ```
-
-直接运行 Bridge：
-
-```bash
-export PI_DEFAULT_MODEL=coding-default
-uv run pi-opensandbox-runner
-```
-
-开发环境说明及 agent-runner 集成建议见
-[本地开发与集成](docs/development.md)。

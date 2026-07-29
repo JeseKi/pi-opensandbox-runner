@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Header, Query, Response
 
 from ..rpc import McpEnvironmentMissing, RpcError, RpcProcessExited, SessionCapacityExceeded
 from ..schemas import (
@@ -21,6 +21,16 @@ from ..schemas import (
 from .context import BridgeContext
 from .problems import ApiProblem
 from .session_state import decode_cursor, encode_cursor, session_out
+
+
+def _accepted_delivery(value: object) -> Literal["prompt", "steer", "follow_up"]:
+    if value == "prompt":
+        return "prompt"
+    if value == "steer":
+        return "steer"
+    if value == "follow_up":
+        return "follow_up"
+    raise ApiProblem(500, "invalid_event", "stored input_accepted delivery is invalid")
 
 
 def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
@@ -60,7 +70,9 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
             name=payload.name,
             cwd=str(cwd.resolve()),
             model=model,
-            thinking_level=payload.thinking_level,
+            thinking_level=(
+                str(payload.thinking_level) if payload.thinking_level is not None else None
+            ),
             system_prompt=payload.system_prompt,
             system_prompt_mode=payload.system_prompt_mode,
         )
@@ -226,9 +238,30 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
             "可同时切换 model 与 thinking_level，设置会持久化到 Session。"
         ),
     )
-    async def prompt(session_id: str, payload: PromptCreate) -> PromptAccepted:
-        command_id = str(uuid.uuid4())
+    async def prompt(
+        session_id: str,
+        payload: PromptCreate,
+        idempotency_key: Annotated[
+            str | None,
+            Header(
+                alias="Idempotency-Key",
+                min_length=1,
+                max_length=128,
+                description="调用方稳定请求 ID；相同 Session 内重复提交只执行一次。",
+            ),
+        ] = None,
+    ) -> PromptAccepted:
+        request_id = idempotency_key or str(uuid.uuid4())
         async with ctx.supervisor.command_lock(session_id):
+            accepted = await ctx.journal.find_input_accepted(session_id, request_id)
+            if accepted is not None:
+                return PromptAccepted(
+                    command_id=str(accepted["command_id"]),
+                    request_id=request_id,
+                    session_id=session_id,
+                    delivery=_accepted_delivery(accepted.get("delivery")),
+                )
+            command_id = request_id
             try:
                 if payload.model is not None:
                     ctx.require_allowed_model(payload.model)
@@ -280,10 +313,11 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
                     )
                     await ctx.catalog.update_model_settings(
                         session_id,
-                        thinking_level=payload.thinking_level,
+                        thinking_level=str(payload.thinking_level),
                         update_thinking_level=True,
                     )
                 command_type = "follow_up" if delivery == "follow_up" else delivery
+                ctx.supervisor.set_active_request(session_id, request_id)
                 await process.request(
                     {"id": command_id, "type": command_type, "message": payload.message}
                 )
@@ -303,6 +337,16 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
         await ctx.journal.append(
             session_id,
             "bridge",
-            {"type": "input_accepted", "command_id": command_id, "delivery": delivery},
+            {
+                "type": "input_accepted",
+                "command_id": command_id,
+                "request_id": request_id,
+                "delivery": delivery,
+            },
         )
-        return PromptAccepted(command_id=command_id, session_id=session_id, delivery=delivery)
+        return PromptAccepted(
+            command_id=command_id,
+            request_id=request_id,
+            session_id=session_id,
+            delivery=delivery,
+        )

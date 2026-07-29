@@ -17,6 +17,7 @@ services:
       - opensandbox-control:/root/.opensandbox
     networks:
       - pi-runner-internal
+      - pi-runner-control
 
   litellm:
     image: ghcr.io/berriai/litellm:v1.92.0
@@ -57,11 +58,43 @@ services:
     networks:
       - pi-runner-control
 
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager
+    restart: unless-stopped
+    env_file:
+      - path: ./.manager.env
+        required: false
+    environment:
+      RUNNER_MANAGER_DATABASE_URL: sqlite:////app/data/runner-manager.db
+      RUNNER_MANAGER_HOST: 0.0.0.0
+      RUNNER_MANAGER_PORT: "8090"
+      OPENSANDBOX_BASE_URL: http://opensandbox:8080
+      LITELLM_BASE_URL: http://litellm:4000
+    volumes:
+      - manager-data:/app/data
+    ports:
+      - "127.0.0.1:8090:8090"
+    depends_on:
+      - opensandbox
+      - litellm
+    networks:
+      - pi-runner-control
+      - manager-ingress
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/readyz', timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
 volumes:
   opensandbox-control:
   litellm-db:
+  manager-data:
 
 networks:
+  manager-ingress:
   pi-runner-internal:
     name: pi-runner-internal
   pi-runner-control:

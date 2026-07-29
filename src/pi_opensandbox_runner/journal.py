@@ -56,9 +56,9 @@ class EventJournal:
             segments = sorted(directory.glob("*.ndjson"))
             target = segments[-1] if segments else directory / f"{seq:020d}.ndjson"
             encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")) + "\n"
-            projected_size = (
-                target.stat().st_size if target.exists() else 0
-            ) + len(encoded.encode())
+            projected_size = (target.stat().st_size if target.exists() else 0) + len(
+                encoded.encode()
+            )
             if target.exists() and projected_size > self.segment_bytes:
                 target = directory / f"{seq:020d}.ndjson"
             with target.open("a", encoding="utf-8") as stream:
@@ -101,6 +101,27 @@ class EventJournal:
             except OSError:
                 continue
         return items
+
+    async def find_input_accepted(self, session_id: str, request_id: str) -> dict[str, Any] | None:
+        """Return a durable prompt acceptance record for retry deduplication."""
+        for path in reversed(sorted(self._dir(session_id).glob("*.ndjson"))):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in reversed(lines):
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event = item.get("event") if isinstance(item, dict) else None
+                if (
+                    isinstance(event, dict)
+                    and event.get("type") == "input_accepted"
+                    and event.get("request_id") == request_id
+                ):
+                    return event
+        return None
 
     async def wait_for_change(self, session_id: str, timeout: float) -> None:
         condition = self._condition(session_id)

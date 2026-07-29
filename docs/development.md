@@ -1,37 +1,97 @@
 # 本地开发与集成
 
-## 开发环境
+## 环境与检查
 
-安装依赖并运行静态检查与测试：
+项目要求 Python 3.13：
 
 ```bash
 uv sync
-uv run ruff check .
-uv run mypy src
-uv run pytest
+make check
 ```
 
-直接运行 Bridge：
+`make check` 依次运行 Ruff、mypy 和 pytest。
+
+## 运行 Bridge
+
+Bridge 是 sandbox 内的数据面。单独启动仅适合开发其 API、Pi RPC 或事件日志：
 
 ```bash
 export PI_DEFAULT_MODEL=coding-default
 uv run pi-opensandbox-runner
 ```
 
-## 面向 agent-runner 的集成
+直接运行时需要自行提供 Pi、LiteLLM virtual key、工作区和 Bridge 状态目录。业务系统不应使用
+这种模式。
 
-后续接入 `agent-runner` 项目时，推荐把本项目视为每用户 sandbox 的数据面：
+## 运行 Manager
 
-- agent-runner 保存 OpenSandbox sandbox ID、Bridge URL 与 Bridge proxy token；
-- 用户操作映射到本项目的 Session、Prompt、events 和 entries API；
-- SSE `seq` 作为断线续传位置；
-- OpenSandbox Server 仍是内部控制面，不把其 API key 暴露给最终用户。
+Manager 依赖 OpenSandbox 和 LiteLLM。准备 `.litellm.env`、`.manager.env` 与
+`.runtime/opensandbox.toml` 后：
 
-当前 Bearer token 是容器级 proxy token：持有者可管理该容器中的全部 Pi Session。若未来一个
-容器承载多个不互信用户，应在 agent-runner 网关层做用户与 sandbox 的绑定，或改为每 Session
-授权。
+```bash
+docker build -t pi-opensandbox-runner:local .
+docker build -f Dockerfile.egress -t pi-runner-egress:local .
+docker compose up -d --build
+curl -fsS http://127.0.0.1:8090/readyz
+```
 
-具体请求和游标语义见 [HTTP API](api.md)，部署边界见
-[网络与安全](network-security.md)。
+也可以让依赖运行在 Compose 中，只在宿主机启动 Manager：
+
+```bash
+set -a
+source .manager.env
+set +a
+export OPENSANDBOX_BASE_URL=http://127.0.0.1:8080
+export LITELLM_BASE_URL=http://127.0.0.1:4000
+uv run pi-runner-manager
+```
+
+宿主机模式的 SQLite 默认写入 `./data/runner-manager.db`。容器模式使用
+`manager-data:/app/data`。
+
+## 与 agent-runner 联调
+
+`agent-runner` 只配置 Manager 地址、service token 和默认 Policy：
+
+```dotenv
+RUNNER_MANAGER_BASE_URL=http://127.0.0.1:8090
+RUNNER_MANAGER_API_TOKEN=<service token>
+RUNNER_DEFAULT_POLICY_SLUG=consumer-default
+```
+
+禁止在 `agent-runner` 中配置或持久化：
+
+- `OPENSANDBOX_API_KEY`
+- `LITELLM_MASTER_KEY`
+- `RUNNER_MANAGER_CREDENTIAL_ENCRYPTION_KEY`
+- sandbox ID、Bridge URL、Bridge proxy token
+- LiteLLM virtual key
+
+调试时先确认 Manager：
+
+```bash
+curl -fsS http://127.0.0.1:8090/readyz | jq
+uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" policies
+```
+
+然后从 `agent-runner` 创建 Session。正常链路应依次看到 Instance provision Operation、
+Manager Session、Turn 以及带正确 `turn_id` 的事件。
+
+## 数据库 migration
+
+Manager 启动时自动执行：
+
+```text
+alembic upgrade head
+```
+
+migration 位于 `src/pi_opensandbox_runner/manager/migrations/`。需要新增字段时编写新的 Alembic
+revision，不要在运行时代码中执行硬编码 `ALTER TABLE` 或 ensure column。
+
+## 低层脚本
+
+`scripts/up.sh`、`down.sh`、`destroy.sh` 和 `egress-policy.sh` 是 Bridge/OpenSandbox 的低层
+调试工具。它们会绕过 Manager 创建独立 sandbox，不应作为 `agent-runner` 的集成方式，也不应
+与 Manager 管理的同一 subject/volume 混用。
 
 返回[文档索引](README.md)。

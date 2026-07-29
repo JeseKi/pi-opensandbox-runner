@@ -4,6 +4,7 @@
 .env.*
 !.env.example
 .litellm.env
+.manager.env
 __pycache__/
 .mypy_cache/
 .pytest_cache/
@@ -16,3 +17,4 @@ wheels/
 *.env
 extensions/pi-runner-mcp/node_modules/
 tmp/
+data/

@@ -1,125 +1,141 @@
 # 架构设计
 
-本文描述 Pi OpenSandbox Runner 的逻辑实体、持久化数据，以及一次提示词从调用方到模型再返回
-事件流的过程。
+## 职责划分
 
-## 实体关系
+Pi OpenSandbox Runner 是内部 Runner Manager，不是 C 端产品服务。
 
-下图同时描述 SQLite 中的逻辑实体和与其一一对应或按名称关联的持久化文件。其中只有
-`SESSION_MCP_SERVER` 的两条关系是数据库外键；其余关系由 Bridge 的运行时协议或命名卷维护。
+| 层 | 负责 | 不负责 |
+| --- | --- | --- |
+| `agent-runner` | 用户、鉴权、浅层管理、产品 Session/Turn、队列和审计 | OpenSandbox、LiteLLM master key、Bridge 凭据 |
+| Runner Manager | Runner Policy、Instance、Operation、Session/Turn 映射、sandbox 和 virtual key | C 端用户体系和产品 UI |
+| Pi Bridge | Pi RPC、对话历史、事件、文件、命令和底层 MCP | consumer 鉴权、跨 sandbox 调度 |
+| OpenSandbox | 容器、endpoint、持久卷、execd、网络策略 | 产品 Session/Turn |
+| LiteLLM | 供应商路由、virtual key、预算和限流 | Runner 生命周期 |
+
+`agent-runner` 只能持有 Manager service token。OpenSandbox API key、LiteLLM master key、
+Bridge token 和 virtual key 都属于 Manager 信任域。
+
+## 控制面与数据面
+
+```mermaid
+flowchart TB
+    ar[agent-runner] -->|Session / Turn| manager[Runner Manager API]
+    manager --> db[(Manager SQLite)]
+    manager -->|provision / stop| os[OpenSandbox API]
+    manager -->|issue / revoke key| llm[LiteLLM Admin API]
+    os --> sandbox[每用户持久 sandbox]
+    manager -->|Bridge proxy token| bridge[Pi Bridge]
+    bridge --> pi[Pi RPC]
+    bridge --> state[(Bridge SQLite / JSONL / NDJSON)]
+    bridge --> execd[OpenSandbox Execd]
+    pi -->|LiteLLM virtual key| llm
+```
+
+Manager 默认使用 SQLite，启用 WAL、foreign keys 和 busy timeout，并通过 Alembic 管理 schema。
+未来迁移 PostgreSQL 时，设计目标是保持 API 和领域语义不变，但当前尚未完成 PostgreSQL
+驱动和生产验证。LiteLLM 的数据库是独立 PostgreSQL，不应与 Manager SQLite 混为一体。
+
+## Manager 领域模型
 
 ```mermaid
 erDiagram
-    SANDBOX ||--|| BRIDGE_STATE : "挂载 /root/.pi"
-    BRIDGE_STATE ||--o{ SESSION : "保存元数据"
-    BRIDGE_STATE ||--o{ MCP_SERVER : "保存定义"
-    SESSION ||--o{ SESSION_MCP_SERVER : "绑定"
-    MCP_SERVER ||--o{ SESSION_MCP_SERVER : "被绑定"
-    SESSION ||--o{ EVENT_SEGMENT : "产生事件"
-    SESSION ||--o| PI_SESSION_JSONL : "生成历史"
-    SANDBOX ||--|| MODEL_CATALOG : "持久化 models.json"
-    SANDBOX ||--|| WORKSPACE_VOLUME : "挂载工作目录"
-    LITELLM_PROXY ||--o{ VIRTUAL_KEY : "签发"
-    VIRTUAL_KEY ||--|| SANDBOX : "限定模型访问范围"
+    CONSUMER ||--o{ MANAGER_TOKEN : owns
+    CONSUMER ||--o{ RUNNER_INSTANCE : owns
+    RUNNER_POLICY ||--o{ RUNNER_INSTANCE : configures
+    RUNNER_INSTANCE ||--o{ MANAGER_OPERATION : changes
+    RUNNER_INSTANCE ||--o{ SESSION_BINDING : hosts
+    SESSION_BINDING ||--o{ TURN_BINDING : contains
 
-    SESSION {
-        string id "主键"
-        string name "名称"
-        string cwd "初始工作目录"
-        string model "LiteLLM 模型别名"
-        string thinking_level "思考等级"
-        string session_file "Pi 历史文件"
+    CONSUMER {
+        string slug
+        boolean active
     }
-    MCP_SERVER {
-        string id "主键"
-        string name "唯一名称"
-        string transport "传输方式"
-        string url "服务地址"
+    RUNNER_POLICY {
+        string slug
+        integer revision
+        string models
+        string cpu
+        string memory
+        number budget
+        string egress_domains
     }
-    SESSION_MCP_SERVER {
-        string session_id "Session 外键"
-        string server_id "MCP Server 外键"
+    RUNNER_INSTANCE {
+        string subject_ref
+        string state
+        string sandbox_id
+        string encrypted_bridge_token
+        string encrypted_litellm_key
     }
-    EVENT_SEGMENT {
-        string session_id "所属 Session"
-        integer sequence "事件序号"
-        string ndjson_path "NDJSON 路径"
+    MANAGER_OPERATION {
+        string kind
+        string status
+        string phase
+        integer attempt
     }
-    PI_SESSION_JSONL {
-        string session_id "所属 Session"
-        string path "文件路径"
+    SESSION_BINDING {
+        string external_session_id
+        string bridge_session_id
+        string active_turn_id
     }
-    MODEL_CATALOG {
-        string fingerprint "配置指纹"
-        string path "文件路径"
-    }
-    VIRTUAL_KEY {
-        string models "可用模型"
-        integer tpm_limit "每分钟令牌上限"
-        number max_budget "总预算"
-        string expiry "过期时间"
+    TURN_BINDING {
+        string external_turn_id
+        string status
+        string command_id
     }
 ```
 
-## 一次提示词的流转
+`subject_ref` 只在 consumer 内唯一。相同 `subject_ref` 不会跨 consumer 共享 Runner Instance。
+Manager 当前为每个 subject 维护一个持久 sandbox，以及独立的 Pi 和 workspace 命名卷。
 
-`provider` 在 Bridge API 中固定为 LiteLLM，不再是调用方参数；调用方只选择已授权的模型
-别名。模型供应商密钥始终停留在 LiteLLM 容器，sandbox 只持有受限的 virtual key。
+## Instance 生命周期
+
+确保 Instance 会创建持久化 `provision` Operation。后台执行器依次：
+
+1. 按 Policy 向 LiteLLM 签发或校正 virtual key；
+2. 恢复或创建 OpenSandbox sandbox；
+3. 等待 sandbox ready；
+4. 检查 Bridge `/readyz`；
+5. 将 Manager model catalog 应用到 Bridge；
+6. 原子地把 Operation 和 Instance 标记为 ready。
+
+已经 ready 且 Policy 未变化时，ensure 是幂等的，不会重复轮换 key 或重建 sandbox。失败操作会
+保存结构化 problem；可重试错误按 operation attempt 重试。
+
+## Session 与 Turn
+
+产品 Session ID 和 Turn ID 由 `agent-runner` 生成，Manager 保存它们与 Bridge 实体的映射。
+同一个 Manager Session 同时只接受一个活动 Turn；后续 Turn 的持久队列由 `agent-runner`
+负责。
 
 ```mermaid
-flowchart LR
-    subgraph caller[调用方]
-        request[POST /v1/sessions/:id/prompts\nBearer bridge proxy token + model]
-        sse[读取 SSE / entries]
-    end
+sequenceDiagram
+    participant AR as agent-runner worker
+    participant RM as Runner Manager
+    participant BR as Pi Bridge
+    participant PI as Pi RPC
 
-    subgraph sandbox[OpenSandbox 私网沙箱]
-        subgraph bridge[FastAPI Bridge]
-            auth[来源校验与模型白名单校验]
-            session[读取/更新 Session 元数据]
-            restart{模型目录或运行配置\n是否已变更?}
-            supervisor[会话监督器\n启动或复用 Pi RPC]
-            journal[写入 Event Journal]
-        end
-        subgraph persistence[持久卷 /root/.pi]
-            sqlite[(SQLite：会话与 MCP 绑定)]
-            catalog[models.json\n原子替换]
-            history[(Pi session JSONL)]
-            events[(分段 NDJSON)]
-        end
-        pi[Pi RPC 子进程\n固定使用 LiteLLM]
-    end
-
-    subgraph gateway[LiteLLM 私网网关]
-        key[验证沙箱虚拟密钥\n模型、预算、RPM/TPM]
-        route[按模型别名路由]
-    end
-
-    subgraph upstream[模型供应商]
-        model[DeepSeek / OpenAI / Anthropic]
-    end
-
-    request --> auth
-    auth -->|无效令牌 / 未授权模型| reject[401 / 422]
-    auth --> session
-    session <--> sqlite
-    session --> restart
-    catalog -.模型目录指纹.-> restart
-    restart -->|是，且未生成| supervisor
-    restart -->|正在生成| pending[409：模型目录更新待处理]
-    restart -->|否| supervisor
-    supervisor --> pi
-    pi -->|OpenAI 兼容请求\n虚拟密钥| key
-    key -->|限流 / 预算 / 模型限制| gateway_error[LiteLLM 4xx 错误]
-    key --> route
-    route -->|供应商密钥仅在此处使用| model
-    model --> route --> pi
-    pi --> history
-    pi --> journal --> events
-    journal --> sse
+    AR->>RM: PUT Instance(subject_ref, policy)
+    RM-->>AR: 202 Operation
+    AR->>RM: GET Operation until terminal
+    AR->>RM: PUT Session(external session id)
+    RM->>BR: ensure Bridge Session
+    AR->>RM: PUT Turn(external turn id, input)
+    RM->>BR: POST prompt + Idempotency-Key=turn id
+    BR->>PI: prompt
+    PI-->>BR: events
+    AR->>RM: GET events(cursor)
+    RM->>BR: read event batch
+    RM-->>AR: protocol envelope with session_id and turn_id
 ```
 
-有关容器、鉴权与网络隔离边界，参见[网络与安全](network-security.md)。有关数据卷生命周期和
-模型目录更新，参见[运行与维护](operations.md)。
+Turn ID 同时作为 Manager 幂等键和 Bridge `Idempotency-Key`。相同 ID、相同输入返回原记录；
+相同 ID、不同输入返回 `409 idempotency_conflict`。
 
-返回[文档索引](README.md)。
+## Bridge 持久化
+
+Bridge 继续使用自己的 SQLite 保存逻辑 Session/MCP 绑定，Pi JSONL 保存真实对话历史，分段
+NDJSON 保存事件游标。它们位于 `/root/.pi` 持久卷；工作区位于 `/root/workspace` 持久卷。
+这些是数据面实现细节，上层 consumer 不应依赖其文件布局。
+
+安全边界见[网络与安全](network-security.md)，协议见
+[Manager API](manager-api.md)和[Bridge API](api.md)。

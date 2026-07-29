@@ -27,6 +27,7 @@ class SessionSupervisor:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._command_locks: dict[str, asyncio.Lock] = {}
         self._map_lock = asyncio.Lock()
+        self._active_request_ids: dict[str, str] = {}
         self._reaper_task: asyncio.Task[None] | None = None
         self._closing = False
 
@@ -50,6 +51,9 @@ class SessionSupervisor:
     def active(self, session_id: str) -> PiRpcProcess | None:
         process = self.processes.get(session_id)
         return process if process is not None and process.alive else None
+
+    def set_active_request(self, session_id: str, request_id: str) -> None:
+        self._active_request_ids[session_id] = request_id
 
     async def needs_configuration_restart(self, record: SessionRecord) -> bool:
         process = self.active(record.id)
@@ -80,12 +84,17 @@ class SessionSupervisor:
                 raise McpEnvironmentMissing(missing)
 
             async def on_event(event: dict[str, Any]) -> None:
-                await self.journal.append(record.id, "pi", event)
+                request_id = self._active_request_ids.get(record.id)
+                enriched = dict(event)
+                if request_id is not None:
+                    enriched["request_id"] = request_id
+                await self.journal.append(record.id, "pi", enriched)
                 event_type = event.get("type")
                 if event_type == "agent_start":
                     await self.catalog.set_runtime(record.id, status="running", error=None)
                 elif event_type in {"agent_settled", "agent_end"}:
                     await self.catalog.set_runtime(record.id, status="idle", error=None)
+                    self._active_request_ids.pop(record.id, None)
 
             async def on_exit(return_code: int | None, expected: bool) -> None:
                 await self._process_exited(record.id, return_code, expected)
@@ -146,6 +155,7 @@ class SessionSupervisor:
             async with self._map_lock:
                 self.processes.pop(session_id, None)
             await self.catalog.set_runtime(session_id, status="stopped", error=None)
+            self._active_request_ids.pop(session_id, None)
             await self.journal.append(session_id, "bridge", {"type": "process_stopped"})
             return True
 

@@ -5,6 +5,8 @@ description = "HTTP bridge for running persistent Pi sessions inside OpenSandbox
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic==1.16.5",
+    "cryptography==45.0.7",
     "fastapi==0.116.1",
     "httpx==0.28.1",
     "pydantic==2.11.7",
@@ -15,6 +17,8 @@ dependencies = [
 
 [project.scripts]
 pi-opensandbox-runner = "pi_opensandbox_runner.__main__:main"
+pi-runner-manager = "pi_opensandbox_runner.manager.__main__:main"
+pi-runner-manager-cli = "pi_opensandbox_runner.manager.cli:main"
 
 [dependency-groups]
 dev = [
@@ -42,6 +46,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/pi_opensandbox_runner/manager/app.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.13"

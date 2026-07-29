@@ -1,0 +1,49 @@
+FROM python:3.13.5-slim-bookworm
+
+ARG MIRROR_MODE=auto
+ENV PYTHONUNBUFFERED=1 \
+    PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+WORKDIR /app
+RUN set -eux; \
+    mirror_mode="$MIRROR_MODE"; \
+    if [ "$mirror_mode" = "auto" ]; then \
+        if python -c "import urllib.request; urllib.request.urlopen('https://www.google.com/generate_204', timeout=3).close()"; then \
+            mirror_mode="global"; \
+        else \
+            mirror_mode="cn"; \
+        fi; \
+    fi; \
+    case "$mirror_mode" in \
+        cn) pypi_index="https://pypi.tuna.tsinghua.edu.cn/simple" ;; \
+        global) pypi_index="https://pypi.org/simple" ;; \
+        *) echo "Unsupported MIRROR_MODE: $MIRROR_MODE"; exit 1 ;; \
+    esac; \
+    echo "Using Python mirror mode: $mirror_mode"; \
+    mkdir -p /root/.config/uv; \
+    printf '[global]\nindex-url = %s\n' "$pypi_index" > /etc/pip.conf; \
+    printf 'index-url = "%s"\n' "$pypi_index" > /root/.config/uv/uv.toml; \
+    python -m pip install \
+        --no-cache-dir \
+        --index-url "$pypi_index" \
+        "uv==0.8.4"
+COPY pyproject.toml uv.lock README.md ./
+RUN uv export \
+        --quiet \
+        --frozen \
+        --no-dev \
+        --no-emit-project \
+        --output-file /tmp/requirements.txt \
+    && uv venv .venv \
+    && uv pip sync \
+        --python .venv/bin/python \
+        /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
+COPY src ./src
+RUN uv pip install \
+        --python .venv/bin/python \
+        --no-deps \
+        .
+
+EXPOSE 8090
+CMD ["pi-runner-manager"]

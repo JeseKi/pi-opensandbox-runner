@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E501
 """Enable egress sidecars on Pi runner's named Docker network.
 
 OpenSandbox v0.2.2 creates an egress sidecar on Docker's default bridge and
