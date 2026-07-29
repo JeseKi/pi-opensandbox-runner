@@ -114,6 +114,8 @@ RUNNER_DEFAULT_POLICY_SLUG=consumer-default
 
 实例创建是异步操作。调用方先确保 Instance，轮询 Operation 到终态，再创建 Session 和提交
 Turn。完整请求示例、幂等语义和错误格式见 [Manager API](docs/manager-api.md)。
+外部产品需要提供 sandbox 交互终端时，可接入 Manager 的一次性票据 WebSocket，详见
+[WebTerminal API](docs/web-terminal.md)；浏览器不需要也不应持有 Manager service token。
 
 ## 常用非破坏性运维入口
 
@@ -133,6 +135,7 @@ uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" stop user-1
 - [文档索引](docs/README.md)
 - [架构设计](docs/architecture.md)
 - [Manager API](docs/manager-api.md)
+- [WebTerminal API 与前端示例](docs/web-terminal.md)
 - [Manager CLI](docs/cli.md)
 - [Bridge API（内部数据面）](docs/api.md)
 - [运行与维护](docs/operations.md)

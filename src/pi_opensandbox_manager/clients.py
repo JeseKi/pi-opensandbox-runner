@@ -282,6 +282,29 @@ class BridgeClient(JsonClient):
     def delete_session(self, session_id: str) -> None:
         self.request("DELETE", f"/sessions/{session_id}", params={"force": "true"})
 
+    def create_terminal(self, cwd: str) -> dict[str, Any]:
+        body = self.json("POST", "/terminals", json={"cwd": cwd})
+        if not isinstance(body, dict) or not body.get("session_id"):
+            raise UpstreamProblem(
+                502,
+                "invalid_bridge_response",
+                "terminal session id is missing",
+            )
+        return body
+
+    def terminal_status(self, terminal_id: str) -> dict[str, Any]:
+        body = self.json("GET", f"/terminals/{terminal_id}")
+        if not isinstance(body, dict):
+            raise UpstreamProblem(
+                502,
+                "invalid_bridge_response",
+                "terminal status is invalid",
+            )
+        return body
+
+    def delete_terminal(self, terminal_id: str) -> None:
+        self.request("DELETE", f"/terminals/{terminal_id}")
+
     def event_batch(
         self, session_id: str, cursor: int, limit: int
     ) -> tuple[list[dict[str, Any]], int]:

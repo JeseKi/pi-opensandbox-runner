@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -240,6 +241,68 @@ class EventOut(BaseModel):
 class EventPage(BaseModel):
     items: list[EventOut] = Field(description="按 seq 升序排列的事件。")
     next_cursor: str = Field(description="下次请求原样传入 cursor 的不透明游标。")
+
+
+class TerminalCreate(BaseModel):
+    session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description="可选 Session ID；仅用它的 cwd 作为 Terminal 初始目录。",
+    )
+
+
+class TerminalOut(BaseModel):
+    id: str = Field(description="Manager 生成的 Terminal UUID。")
+    subject_ref: str = Field(description="Terminal 所属的 Instance 主体标识。")
+    session_id: str | None = Field(description="用于选择初始 cwd 的可选 Session ID。")
+    cwd: str = Field(description="Terminal 初始目录；不是文件权限边界。")
+    state: str = Field(description="created、connected、detached、exited、closed 或 unavailable。")
+    output_offset: int = Field(description="用于断线 replay 的 Execd 字节游标。")
+    warnings: list[str] = Field(description="外部 UI 必须展示的并发与权限警告。")
+    created_at: datetime
+    updated_at: datetime
+    connected_at: datetime | None
+    disconnected_at: datetime | None
+    expires_at: datetime
+
+
+class TerminalPage(BaseModel):
+    items: list[TerminalOut]
+    next_cursor: str | None
+    has_more: bool
+
+
+class TerminalTicketCreate(BaseModel):
+    origin: str = Field(
+        min_length=1,
+        max_length=512,
+        description="浏览器页面的精确 Origin，例如 https://app.example.com。",
+    )
+
+    @field_validator("origin")
+    @classmethod
+    def validate_origin(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("origin must contain only http(s) scheme and authority")
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+class TerminalTicketOut(BaseModel):
+    websocket_url: str = Field(description="外部 UI 应连接的 Manager WebSocket URL。")
+    subprotocols: list[str] = Field(
+        description="原样传给浏览器 WebSocket 构造函数的 subprotocol 列表。"
+    )
+    expires_at: datetime = Field(description="一次性 ticket 的过期时间。")
 
 
 class AdminModelCreate(BaseModel):

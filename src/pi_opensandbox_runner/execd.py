@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -16,7 +17,16 @@ class ExecdClient:
     """Authenticated bridge-local access to OpenSandbox's injected Execd."""
 
     def __init__(self, base_url: str):
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=None)
+        self.base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=None)
+
+    def websocket_url(self, path: str, query: str = "") -> str:
+        parsed = urlsplit(self.base_url)
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        base_path = parsed.path.rstrip("/")
+        return urlunsplit(
+            (scheme, parsed.netloc, f"{base_path}/{path.lstrip('/')}", query, "")
+        )
 
     async def close(self) -> None:
         await self._client.aclose()

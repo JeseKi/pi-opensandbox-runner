@@ -94,6 +94,7 @@ def bootstrap(database: ManagerDatabase, settings: ManagerSettings) -> None:
                     "workspace:read",
                     "workspace:write",
                     "commands:execute",
+                    "terminals:access",
                 ],
             )
         if settings.bootstrap_admin_token:
@@ -126,6 +127,11 @@ def _ensure_token(
                 scopes_json=json.dumps(scopes),
             )
         )
+        return
+    existing_scopes = set(json.loads(existing.scopes_json))
+    merged_scopes = existing_scopes | set(scopes)
+    if merged_scopes != existing_scopes:
+        existing.scopes_json = json.dumps(sorted(merged_scopes))
 
 
 def generate_token(prefix: str) -> str:

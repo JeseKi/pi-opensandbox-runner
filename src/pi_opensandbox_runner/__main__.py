@@ -9,6 +9,8 @@ def main() -> None:
         factory=True,
         host="0.0.0.0",
         port=8765,
+        ws_max_size=65_536,
+        ws_per_message_deflate=False,
         # Source-address access control is part of the bridge boundary.  Do not
         # replace the TCP peer with a caller-controlled forwarded header.
         proxy_headers=False,

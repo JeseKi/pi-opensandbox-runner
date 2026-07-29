@@ -20,6 +20,13 @@ class ManagerSettings:
     operation_poll_seconds: float = 0.5
     http_timeout_seconds: float = 30.0
     provision_timeout_seconds: float = 180.0
+    terminal_public_ws_url: str = "ws://127.0.0.1:8090/v1/terminal-connections"
+    terminal_allowed_origins: str = ""
+    terminal_ticket_ttl_seconds: int = 60
+    terminal_detached_ttl_seconds: int = 900
+    terminal_max_lifetime_seconds: int = 28_800
+    max_terminals_per_instance: int = 4
+    terminal_cleanup_seconds: float = 60.0
     host: str = "0.0.0.0"
     port: int = 8090
 
@@ -46,6 +53,28 @@ class ManagerSettings:
             provision_timeout_seconds=float(
                 os.getenv("RUNNER_MANAGER_PROVISION_TIMEOUT_SECONDS", "180")
             ),
+            terminal_public_ws_url=os.getenv(
+                "RUNNER_MANAGER_TERMINAL_PUBLIC_WS_URL",
+                "ws://127.0.0.1:8090/v1/terminal-connections",
+            ),
+            terminal_allowed_origins=os.getenv(
+                "RUNNER_MANAGER_TERMINAL_ALLOWED_ORIGINS", ""
+            ),
+            terminal_ticket_ttl_seconds=int(
+                os.getenv("RUNNER_MANAGER_TERMINAL_TICKET_TTL_SECONDS", "60")
+            ),
+            terminal_detached_ttl_seconds=int(
+                os.getenv("RUNNER_MANAGER_TERMINAL_DETACHED_TTL_SECONDS", "900")
+            ),
+            terminal_max_lifetime_seconds=int(
+                os.getenv("RUNNER_MANAGER_TERMINAL_MAX_LIFETIME_SECONDS", "28800")
+            ),
+            max_terminals_per_instance=int(
+                os.getenv("RUNNER_MANAGER_MAX_TERMINALS_PER_INSTANCE", "4")
+            ),
+            terminal_cleanup_seconds=float(
+                os.getenv("RUNNER_MANAGER_TERMINAL_CLEANUP_SECONDS", "60")
+            ),
             host=os.getenv("RUNNER_MANAGER_HOST", "0.0.0.0"),
             port=int(os.getenv("RUNNER_MANAGER_PORT", "8090")),
         )
@@ -56,3 +85,11 @@ class ManagerSettings:
         if not self.database_url.startswith(prefix):
             return None
         return Path(self.database_url.removeprefix(prefix))
+
+    @property
+    def allowed_terminal_origins(self) -> frozenset[str]:
+        return frozenset(
+            item.strip().rstrip("/")
+            for item in self.terminal_allowed_origins.split(",")
+            if item.strip()
+        )

@@ -84,4 +84,14 @@ ID 足以关联控制面日志。
 
 错误响应中的 `detail` 可能包含上游信息，返回最终用户前应由 `agent-runner` 做产品层过滤。
 
+## WebTerminal 暴露边界
+
+生产环境可以只向外部 UI 暴露 Manager 的精确路径 `/v1/terminal-connections`。业务后端在
+鉴权和校验 `subject_ref` 后调用内部 REST API 签发一次性 ticket；浏览器通过
+Sec-WebSocket-Protocol 提交 ticket，因此凭据不会进入 URL、访问日志或前端持久存储。
+
+ticket 默认 60 秒有效、只能消费一次，并绑定配置白名单中的精确 Origin。外部入口必须使用
+TLS/WSS、校验 Origin，并限制单帧大小。Manager service/admin token、Bridge token 和
+OpenSandbox API key 均不得进入浏览器。完整部署配置见 [WebTerminal API](web-terminal.md)。
+
 返回[文档索引](README.md)。

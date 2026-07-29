@@ -27,6 +27,7 @@ from .model_routes import register_model_routes
 from .problems import ApiProblem, problem_response
 from .session_routes import register_session_routes
 from .session_runtime_routes import register_session_runtime_routes
+from .terminal_routes import register_terminal_routes
 
 EXTERNAL_BEARER_AUTH = HTTPBearer(auto_error=False)
 ExternalBearerCredentials = Annotated[
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             {"name": "Models", "description": "Pi LiteLLM 模型目录管理。"},
             {"name": "Files", "description": "通过 OpenSandbox Execd 浏览和修改容器文件。"},
             {"name": "Commands", "description": "通过 OpenSandbox Execd 执行和管理命令。"},
+            {"name": "Terminals", "description": "通过 OpenSandbox Execd 访问交互式 PTY。"},
         ],
     )
     app.state.settings = resolved
@@ -202,17 +204,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     model_router = APIRouter(tags=["Models"])
     file_router = APIRouter(tags=["Files"])
     command_router = APIRouter(tags=["Commands"])
+    terminal_router = APIRouter(tags=["Terminals"])
+    terminal_websocket_router = APIRouter(prefix="/v1")
     register_session_routes(session_router, ctx)
     register_session_runtime_routes(runtime_router, ctx)
     register_mcp_routes(mcp_router, ctx)
     register_model_routes(model_router, ctx)
     register_file_routes(file_router, ctx)
     register_command_routes(command_router, ctx)
+    register_terminal_routes(
+        terminal_router,
+        terminal_websocket_router,
+        ctx,
+        trusted_peer=trusted_proxy_addresses.contains,
+    )
     router.include_router(session_router)
     router.include_router(runtime_router)
     router.include_router(mcp_router)
     router.include_router(model_router)
     router.include_router(file_router)
     router.include_router(command_router)
+    router.include_router(terminal_router)
     app.include_router(router)
+    app.include_router(terminal_websocket_router)
     return app

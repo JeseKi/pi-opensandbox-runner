@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pi OpenSandbox WebTerminal Demo</title>
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css"
+    integrity="sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD"
+    crossorigin="anonymous"
+  >
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: #111418;
+      color: #e8edf2;
+    }
+    body { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 1.35rem; }
+    .warning {
+      padding: 12px 16px;
+      border-left: 4px solid #d6a53a;
+      background: #282315;
+      line-height: 1.5;
+    }
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 120px;
+      margin: 12px 0;
+      padding: 10px;
+      border: 1px solid #45505b;
+      background: #181c21;
+      color: inherit;
+      font: 13px ui-monospace, monospace;
+    }
+    button {
+      margin: 0 8px 12px 0;
+      padding: 8px 14px;
+      border: 1px solid #667482;
+      border-radius: 4px;
+      background: #26313b;
+      color: inherit;
+      cursor: pointer;
+    }
+    button:disabled { cursor: default; opacity: .5; }
+    #status { margin-left: 6px; color: #aab7c4; }
+    #terminal { height: min(65vh, 650px); padding: 8px; background: #000; }
+  </style>
+</head>
+<body>
+  <h1>Pi OpenSandbox WebTerminal Demo</h1>
+  <p class="warning">
+    Terminal 可访问整个 sandbox，并可能与 Agent 同时修改 workspace。
+    此页面只接收一次性 ticket JSON，切勿粘贴 Manager service token。
+  </p>
+  <label for="ticket">Ticket API 的完整 JSON 响应</label>
+  <textarea id="ticket" spellcheck="false"
+    placeholder='{"websocket_url":"ws://127.0.0.1:8090/v1/terminal-connections","subprotocols":["pi-terminal.v1","pi-terminal-ticket.rm_pty_..."],"expires_at":"..."}'></textarea>
+  <div>
+    <button id="connect">连接</button>
+    <button id="disconnect" disabled>断开</button>
+    <span id="status">未连接</span>
+  </div>
+  <div id="terminal"></div>
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js"
+    integrity="sha384-f/1U6Z9wM4D71a5eRXEZnyOTMOvjqxr2XLwh+Go1OvIl3L3tOcvUrzudnhbECwl4"
+    crossorigin="anonymous"
+  ></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.js"
+    integrity="sha384-txoiwu4RR2GD3qySbaj+BbzibkLbSJRcfqGYMu6z1EqHil4A2dyBiBW5dlacG6OR"
+    crossorigin="anonymous"
+  ></script>
+  <script>
+    const term = new Terminal({
+      cursorBlink: true,
+      convertEol: false,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      theme: { background: "#000000" }
+    });
+    const fit = new FitAddon.FitAddon();
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const ticketInput = document.querySelector("#ticket");
+    const connectButton = document.querySelector("#connect");
+    const disconnectButton = document.querySelector("#disconnect");
+    const status = document.querySelector("#status");
+    let socket = null;
+    let outputOffset = 0;
+
+    term.loadAddon(fit);
+    term.open(document.querySelector("#terminal"));
+    fit.fit();
+
+    function sendResize() {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      }
+    }
+
+    function setConnected(connected, message) {
+      connectButton.disabled = connected;
+      disconnectButton.disabled = !connected;
+      status.textContent = message;
+    }
+
+    function connect() {
+      let ticket;
+      try {
+        ticket = JSON.parse(ticketInput.value);
+        if (!ticket.websocket_url || !Array.isArray(ticket.subprotocols)) {
+          throw new Error("缺少 websocket_url 或 subprotocols");
+        }
+      } catch (error) {
+        status.textContent = `Ticket 无效：${error.message}`;
+        return;
+      }
+
+      const url = new URL(ticket.websocket_url);
+      if (outputOffset > 0) {
+        url.searchParams.set("since", String(outputOffset));
+      }
+      socket = new WebSocket(url, ticket.subprotocols);
+      socket.binaryType = "arraybuffer";
+      setConnected(true, "连接中…");
+
+      socket.onopen = () => {
+        status.textContent = "已连接";
+        term.focus();
+        sendResize();
+      };
+      socket.onmessage = (event) => {
+        if (typeof event.data === "string") {
+          const message = JSON.parse(event.data);
+          if (message.type === "exit") {
+            status.textContent = `进程退出（code ${message.exit_code ?? "?"}）`;
+          }
+          return;
+        }
+        const frame = new Uint8Array(event.data);
+        if (frame[0] === 0x01) {
+          const payload = frame.subarray(1);
+          outputOffset += payload.byteLength;
+          term.write(decoder.decode(payload, { stream: true }));
+        } else if (frame[0] === 0x03 && frame.byteLength >= 9) {
+          const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+          const start = Number(view.getBigUint64(1, false));
+          const payload = frame.subarray(9);
+          outputOffset = Math.max(outputOffset, start + payload.byteLength);
+          term.write(decoder.decode(payload, { stream: true }));
+        }
+      };
+      socket.onerror = () => { status.textContent = "连接错误"; };
+      socket.onclose = (event) => {
+        setConnected(false, `已断开（${event.code}${event.reason ? `：${event.reason}` : ""}）`);
+        socket = null;
+      };
+    }
+
+    term.onData((data) => {
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      const payload = encoder.encode(data);
+      const frame = new Uint8Array(payload.byteLength + 1);
+      frame[0] = 0x00;
+      frame.set(payload, 1);
+      socket.send(frame);
+    });
+    term.onResize(sendResize);
+    window.addEventListener("resize", () => { fit.fit(); });
+    connectButton.addEventListener("click", connect);
+    disconnectButton.addEventListener("click", () => socket?.close(1000, "demo disconnected"));
+  </script>
+</body>
+</html>

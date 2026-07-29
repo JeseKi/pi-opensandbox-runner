@@ -209,6 +209,27 @@ GET|DELETE     /v1/instances/{subject_ref}/sessions/{session_id}/commands/{comma
 
 路径前缀不是强安全边界，不能把 workspace/command API 直接暴露给不可信调用方。
 
+## WebTerminal
+
+Manager 可以为 ready Instance 创建独立 PTY，并向已经完成最终用户授权的外部后端签发
+短期、一次性、绑定精确 Origin 的浏览器连接票据：
+
+```http
+POST   /v1/instances/{subject_ref}/terminals
+GET    /v1/instances/{subject_ref}/terminals
+GET    /v1/instances/{subject_ref}/terminals/{terminal_id}
+DELETE /v1/instances/{subject_ref}/terminals/{terminal_id}
+POST   /v1/instances/{subject_ref}/terminals/{terminal_id}/tickets
+WS     /v1/terminal-connections
+```
+
+这些 REST API 需要 `terminals:access` scope。浏览器只连接最后一个 WebSocket 路径，并通过
+Sec-WebSocket-Protocol 提交 ticket；不能把 service token 交给浏览器。Terminal 与 Agent
+Turn 是共享文件系统的独立进程，可并发运行，但不会附着到 Agent stdin。
+
+协议、断线 replay、反向代理配置和可直接运行的 xterm.js 示例见
+[WebTerminal API](web-terminal.md)。
+
 ## Admin API
 
 管理员 token 只用于内部配置：

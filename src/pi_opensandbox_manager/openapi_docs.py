@@ -58,6 +58,10 @@ OPENAPI_TAGS = [
         "description": "预览能力：在 Session 工作目录中执行、查询和中止后台命令。",
     },
     {
+        "name": "Terminal（交互终端）",
+        "description": "管理 Instance 级 PTY，并签发浏览器一次性 WebSocket 连接票据。",
+    },
+    {
         "name": "Admin（内部管理）",
         "description": "仅供核心平台使用 admin token 发布模型与 Policy revision。",
     },

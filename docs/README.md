@@ -5,6 +5,7 @@
 
 - [架构设计](architecture.md)：控制面/数据面边界、实体、持久化和 Turn 流程。
 - [Manager API](manager-api.md)：`agent-runner` 等内部 consumer 使用的稳定 API。
+- [WebTerminal API](web-terminal.md)：外部 UI 的一次性连接票据、WebSocket 协议和 xterm.js 示例。
 - [Manager CLI](cli.md)：Model、Policy 和 Instance 生命周期命令参考。
 - [Bridge API](api.md)：Manager 内部调用的数据面协议，仅用于开发和故障排查。
 - [运行与维护](operations.md)：部署、策略、Operation、SQLite 备份和故障处理。

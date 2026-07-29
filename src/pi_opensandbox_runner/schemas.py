@@ -168,6 +168,16 @@ class PromptAccepted(BaseModel):
     delivery: Literal["prompt", "steer", "follow_up"]
 
 
+class TerminalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cwd: str = Field(
+        min_length=1,
+        max_length=4096,
+        description="Terminal 初始工作目录；它不是文件权限边界。",
+    )
+
+
 class SystemPromptUpdate(BaseModel):
     system_prompt: str = Field(
         min_length=1,

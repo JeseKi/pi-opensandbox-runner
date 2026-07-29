@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, MockTransport, Request, Response
 
 from pi_opensandbox_runner.app import TrustedProxyAddresses, create_app
 from pi_opensandbox_runner.config import Settings
@@ -165,11 +166,75 @@ async def test_docs_use_the_opensandbox_proxy_prefix(client: AsyncClient) -> Non
     ]
     assert schema.json()["paths"]["/v1/mcp/servers"]["get"]["tags"] == ["MCP"]
     assert schema.json()["paths"]["/v1/models/config"]["put"]["tags"] == ["Models"]
+    assert schema.json()["paths"]["/v1/terminals"]["post"]["tags"] == ["Terminals"]
 
     config = await client.get("/v1/models/config")
     assert config.status_code == 200
     assert config.json()["models"] == ["coding-default"]
     assert config.json()["fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_bridge_terminal_rest_proxy(tmp_path: Path) -> None:
+    fake_pi = Path(__file__).with_name("fake_pi.py")
+    configured = Settings(
+        state_root=tmp_path / "state",
+        pi_session_dir=tmp_path / "pi-sessions",
+        workspace_root=tmp_path / "workspace",
+        pi_executable=str(fake_pi),
+        model_catalog_path=Path(__file__).parents[1] / "config" / "pi-models.json",
+    )
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: Request) -> Response:
+        seen.append((request.method, request.url.path))
+        if request.method == "POST":
+            assert json.loads(request.content)["cwd"] == "/root/workspace"
+            return Response(201, json={"session_id": "pty-one"})
+        if request.method == "GET":
+            return Response(
+                200,
+                json={
+                    "session_id": "pty-one",
+                    "running": True,
+                    "output_offset": 12,
+                },
+            )
+        return Response(200, json={"success": True})
+
+    app = create_app(configured)
+    websocket_route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/v1/terminals/{terminal_id}/ws"
+    )
+    dependant = cast(Any, websocket_route).dependant
+    assert dependant.dependencies == []
+    async with app.router.lifespan_context(app):
+        await app.state.execd._client.aclose()
+        app.state.execd._client = AsyncClient(
+            base_url=configured.execd_url,
+            transport=MockTransport(handler),
+        )
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as http:
+            created = await http.post(
+                "/v1/terminals",
+                json={"cwd": "/root/workspace"},
+            )
+            assert created.status_code == 201
+            assert created.json()["session_id"] == "pty-one"
+            status = await http.get("/v1/terminals/pty-one")
+            assert status.json()["output_offset"] == 12
+            deleted = await http.delete("/v1/terminals/pty-one")
+            assert deleted.status_code == 200
+    assert seen == [
+        ("POST", "/pty"),
+        ("GET", "/pty/pty-one"),
+        ("DELETE", "/pty/pty-one"),
+    ]
 
 
 @pytest.mark.asyncio

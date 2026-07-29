@@ -181,3 +181,39 @@ class TurnBinding(Base):
     )
 
     __table_args__ = (UniqueConstraint("session_binding_id", "external_turn_id"),)
+
+
+class TerminalBinding(Base):
+    __tablename__ = "manager_terminal_bindings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    instance_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("manager_runner_instances.id", ondelete="CASCADE")
+    )
+    session_binding_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("manager_session_bindings.id", ondelete="SET NULL")
+    )
+    upstream_terminal_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    cwd: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), default="created", nullable=False)
+    output_offset: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TerminalTicket(Base):
+    __tablename__ = "manager_terminal_tickets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    terminal_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("manager_terminal_bindings.id", ondelete="CASCADE")
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

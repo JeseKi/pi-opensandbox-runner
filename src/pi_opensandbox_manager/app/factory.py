@@ -25,6 +25,11 @@ from .event_routes import register_event_routes
 from .instance_list_routes import register_instance_list_routes
 from .instance_routes import register_instance_routes
 from .session_routes import register_session_routes
+from .terminal_routes import (
+    cleanup_terminals,
+    mark_connected_terminals_detached,
+    register_terminal_routes,
+)
 from .turn_routes import register_turn_routes
 from .workspace_routes import register_workspace_routes
 
@@ -49,19 +54,29 @@ def create_manager_app(
                         stop_event.wait(), timeout=resolved.operation_poll_seconds
                     )
 
+    async def terminal_cleanup_loop() -> None:
+        while not stop_event.is_set():
+            await cleanup_terminals(db_control, resolved, cipher)
+            with suppress(TimeoutError):
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=resolved.terminal_cleanup_seconds
+                )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db_control.initialize()
         bootstrap(db_control, resolved)
         with db_control.session() as db:
             seed_catalog(db)
+        mark_connected_terminals_detached(db_control)
         app.state.worker_alive = True
         worker = asyncio.create_task(operation_loop())
+        terminal_cleaner = asyncio.create_task(terminal_cleanup_loop())
         try:
             yield
         finally:
             stop_event.set()
-            await worker
+            await asyncio.gather(worker, terminal_cleaner)
             app.state.worker_alive = False
             db_control.dispose()
 
@@ -145,5 +160,12 @@ def create_manager_app(
     register_event_routes(app, db_control, resolved, cipher, service_principal)
     register_workspace_routes(app, db_control, resolved, cipher, service_principal)
     register_command_routes(app, db_control, resolved, cipher, service_principal)
+    register_terminal_routes(
+        app,
+        db_control,
+        resolved,
+        cipher,
+        service_principal,
+    )
     register_admin_routes(app, db_control, admin_principal)
     return app

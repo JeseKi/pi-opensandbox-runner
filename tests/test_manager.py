@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from pi_opensandbox_manager.app import _event_out, create_manager_app
+from pi_opensandbox_manager.app.terminal_routes import (
+    TERMINAL_TICKET_PREFIX,
+    _consume_ticket,
+)
 from pi_opensandbox_manager.clients import OpenSandboxClient
 from pi_opensandbox_manager.config import ManagerSettings
 from pi_opensandbox_manager.crypto import CredentialCipher
@@ -15,9 +21,12 @@ from pi_opensandbox_manager.database import ManagerDatabase
 from pi_opensandbox_manager.models import (
     Consumer,
     ManagerOperation,
+    ManagerToken,
     RunnerInstance,
     RunnerPolicy,
     SessionBinding,
+    TerminalBinding,
+    TerminalTicket,
 )
 from pi_opensandbox_manager.schemas import InstanceEnsure
 from pi_opensandbox_manager.security import bootstrap
@@ -34,6 +43,8 @@ def settings(tmp_path: Path) -> ManagerSettings:
         bootstrap_service_token="rm_svc_test",
         bootstrap_admin_token="rm_adm_test",
         operation_poll_seconds=60,
+        terminal_allowed_origins="http://127.0.0.1:8000",
+        terminal_cleanup_seconds=60,
     )
 
 
@@ -403,6 +414,25 @@ def test_ready_instance_does_not_enqueue_another_provision(tmp_path: Path) -> No
     database.dispose()
 
 
+def test_bootstrap_merges_new_service_token_scopes(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    bootstrap(database, configured)
+    with database.session() as db:
+        token = db.query(ManagerToken).filter_by(kind="service").one()
+        token.scopes_json = '["instances:read"]'
+
+    bootstrap(database, configured)
+
+    with database.session() as db:
+        token = db.query(ManagerToken).filter_by(kind="service").one()
+        scopes = set(json.loads(token.scopes_json))
+        assert "instances:read" in scopes
+        assert "terminals:access" in scopes
+    database.dispose()
+
+
 def test_opensandbox_client_uses_exact_metadata_filter() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["metadata"] == "pi-manager.instance-id=one"
@@ -416,3 +446,128 @@ def test_opensandbox_client_uses_exact_metadata_filter() -> None:
         assert client.find_by_metadata({"pi-manager.instance-id": "one"}) == {"id": "sandbox-one"}
     finally:
         client.close()
+
+
+def test_manager_terminal_lifecycle_and_one_time_ticket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    bootstrap(database, configured)
+    cipher = CredentialCipher(configured.credential_encryption_key)
+    with database.session() as db:
+        seed_catalog(db)
+        consumer = db.query(Consumer).filter_by(slug="agent-runner").one()
+        policy = db.query(RunnerPolicy).filter_by(slug="consumer-default").one()
+        instance = RunnerInstance(
+            id="terminal-instance",
+            consumer_id=consumer.id,
+            subject_ref="terminal-user",
+            policy_id=policy.id,
+            state="ready",
+            phase="ready",
+            bridge_url="http://opensandbox:8080/proxy/bridge",
+            bridge_token_encrypted=cipher.encrypt("bridge-token"),
+            pi_volume_name="pi-terminal",
+            workspace_volume_name="workspace-terminal",
+            litellm_key_alias="key-terminal",
+        )
+        db.add(instance)
+        db.flush()
+        db.add(
+            SessionBinding(
+                id="terminal-session-binding",
+                instance_id=instance.id,
+                external_session_id="session-1",
+                title="Terminal session",
+                model_slug="coding-default",
+                cwd="/root/workspace/sessions/session-1",
+                state="ready",
+            )
+        )
+
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.clients.BridgeClient.create_terminal",
+        lambda _self, cwd: {"session_id": "execd-terminal", "cwd": cwd},
+    )
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.clients.BridgeClient.terminal_status",
+        lambda _self, _terminal_id: {"running": True, "output_offset": 17},
+    )
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.clients.BridgeClient.delete_terminal",
+        lambda _self, terminal_id: deleted.append(terminal_id),
+    )
+
+    app = create_manager_app(configured, database)
+    headers = {"Authorization": "Bearer rm_svc_test"}
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/instances/terminal-user/terminals",
+            headers=headers,
+            json={"session_id": "session-1"},
+        )
+        assert created.status_code == 201
+        terminal = created.json()
+        assert terminal["cwd"] == "/root/workspace/sessions/session-1"
+        assert len(terminal["warnings"]) == 2
+
+        status = client.get(
+            f"/v1/instances/terminal-user/terminals/{terminal['id']}",
+            headers=headers,
+        )
+        assert status.status_code == 200
+        assert status.json()["output_offset"] == 17
+
+        disallowed = client.post(
+            f"/v1/instances/terminal-user/terminals/{terminal['id']}/tickets",
+            headers=headers,
+            json={"origin": "https://evil.example"},
+        )
+        assert disallowed.status_code == 422
+        assert disallowed.json()["code"] == "terminal_origin_not_allowed"
+
+        issued = client.post(
+            f"/v1/instances/terminal-user/terminals/{terminal['id']}/tickets",
+            headers=headers,
+            json={"origin": "http://127.0.0.1:8000"},
+        )
+        assert issued.status_code == 201
+        protocols = issued.json()["subprotocols"]
+        ticket = protocols[1].removeprefix(TERMINAL_TICKET_PREFIX)
+        with database.session() as db:
+            stored_ticket = db.query(TerminalTicket).one()
+            assert stored_ticket.token_hash != ticket
+
+        assert _consume_ticket(
+            database,
+            cipher,
+            ticket,
+            "https://evil.example",
+        ) is None
+        assert _consume_ticket(
+            database,
+            cipher,
+            ticket,
+            "http://127.0.0.1:8000",
+        ) is not None
+        assert _consume_ticket(
+            database,
+            cipher,
+            ticket,
+            "http://127.0.0.1:8000",
+        ) is None
+
+        removed = client.delete(
+            f"/v1/instances/terminal-user/terminals/{terminal['id']}",
+            headers=headers,
+        )
+        assert removed.status_code == 204
+        with database.session() as db:
+            stored_terminal = db.get(TerminalBinding, terminal["id"])
+            assert stored_terminal is not None
+            assert stored_terminal.state == "closed"
+        assert deleted == ["execd-terminal"]
