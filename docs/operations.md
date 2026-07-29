@@ -7,13 +7,16 @@ Compose 包含：
 | 服务 | 默认地址 | 持久化 |
 | --- | --- | --- |
 | Runner Manager | `127.0.0.1:8090` | `manager-data` 中的 SQLite |
-| OpenSandbox | `127.0.0.1:8080` | `opensandbox-control` |
-| LiteLLM | `127.0.0.1:4000` | 独立 PostgreSQL |
+| OpenSandbox | `opensandbox:8080`，仅 Docker 网络 | `opensandbox-control` |
+| LiteLLM | `litellm:4000`，仅 Docker 网络 | 独立 PostgreSQL |
 | LiteLLM PostgreSQL | 仅 control network | `litellm-db` |
 
 Manager 与这些依赖位于私有 control network，并通过独立的 Manager ingress network 向宿主机
 回环地址发布 `8090`。Runner sandbox 位于内部 runner network，并由 OpenSandbox server
 proxy 提供受 token 保护的 Bridge endpoint。
+
+宿主机排障确实需要直连 OpenSandbox 或 LiteLLM 时，复制 `.env.dev.example` 为 `.env` 后
+重建服务；开发覆盖只在 `127.0.0.1` 发布 `8080` 和 `4000`。生产部署不应加载该覆盖文件。
 
 ## 启动和健康检查
 

@@ -34,14 +34,14 @@ SQLite。加密 key 不得与数据库备份放在同一位置，也不能提交
 
 ## 网络暴露
 
-Compose 默认只在宿主机回环地址发布：
+基础 Compose 默认只在宿主机回环地址发布：
 
 - Manager `127.0.0.1:8090`
-- OpenSandbox `127.0.0.1:8080`
-- LiteLLM `127.0.0.1:4000`
 
 需要跨机器访问 Manager 时，应使用有认证的反向代理、VPN 或服务网格，不要直接监听公网。
-OpenSandbox 和 LiteLLM 管理端口不应对 consumer 网络开放。
+OpenSandbox 与 LiteLLM 没有宿主机端口，只允许 Manager 和 sandbox 通过 Docker 网络访问。
+开发者复制 `.env.dev.example` 为 `.env` 后，`compose.dev.yaml` 才会把它们分别发布到
+`127.0.0.1:8080` 和 `127.0.0.1:4000`；生产环境不得加载该开发覆盖。
 
 Manager 通过私有的 `pi-runner-control` 访问控制面依赖，并单独连接只供 Manager 使用的
 `manager-ingress`，以便把 `8090` 发布到宿主机回环地址。sandbox 位于

@@ -29,11 +29,15 @@ Manager 依赖 OpenSandbox 和 LiteLLM。准备 `.litellm.env`、`.manager.env` 
 `.runtime/opensandbox.toml` 后：
 
 ```bash
+cp .env.dev.example .env
 docker build -t pi-opensandbox-runner:local .
 docker build -f Dockerfile.egress -t pi-runner-egress:local .
 docker compose up -d --build
 curl -fsS http://127.0.0.1:8090/readyz
 ```
+
+开发 `.env` 会同时加载 `compose.yaml` 和 `compose.dev.yaml`，把 OpenSandbox `8080` 与
+LiteLLM `4000` 额外发布到宿主机回环地址。基础 Compose 不发布这两个端口。
 
 也可以让依赖运行在 Compose 中，只在宿主机启动 Manager：
 

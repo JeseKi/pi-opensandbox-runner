@@ -84,6 +84,17 @@ docker compose up -d --build
 curl -fsS http://127.0.0.1:8090/readyz | jq
 ```
 
+基础 `compose.yaml` 只向宿主机发布 Manager；OpenSandbox 和 LiteLLM 仅通过 Docker 网络
+访问。需要从宿主机调试这两个依赖时，先启用开发覆盖：
+
+```bash
+cp .env.dev.example .env
+docker compose up -d --build
+```
+
+`.env` 通过 `COMPOSE_FILE` 加载 `compose.dev.yaml`，只额外发布回环地址上的 `8080` 和
+`4000`。不要把本地 `.env` 部署到生产环境。
+
 Manager 首次启动会执行 Alembic migration，并在 SQLite 中创建默认
 `coding-default` model、`consumer-default` policy 和 bootstrap consumer。只有配置了非空且
 互不相同的 bootstrap service/admin token 时，才会创建对应 token。

@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+!.env.dev.example
 .litellm.env
 .manager.env
 __pycache__/
