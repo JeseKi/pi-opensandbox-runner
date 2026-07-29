@@ -117,8 +117,7 @@ fi
 
 KEY_ALIAS="pi-runner-${NAME}-$(openssl rand -hex 4)"
 KEY_REQUEST="$(jq -n --arg model "$MODEL" --arg key_alias "$KEY_ALIAS" --arg name "$NAME" \
-  '{models: [$model], duration: "24h", max_budget: 5, max_parallel_requests: 2,
-    rpm_limit: 30, tpm_limit: 1000000, key_alias: $key_alias,
+  '{models: [$model], key_alias: $key_alias,
     metadata: {sandbox_name: $name}}')"
 KEY_RESPONSE="$(litellm_admin POST /key/generate "$KEY_REQUEST")"
 LITELLM_KEY="$(jq -er '.key // .token' <<<"$KEY_RESPONSE")"

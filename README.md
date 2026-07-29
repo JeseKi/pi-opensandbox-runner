@@ -158,6 +158,27 @@ chmod 600 .litellm.env
 默认路由到 DeepSeek V4 Pro。`gpt-5.6-terra` 已在 LiteLLM 中配置；需要先在目标 sandbox 的
 虚拟 Key 中授权，再通过 bridge 模型目录接口加入该 sandbox。
 
+### 管理虚拟 Key 预算
+
+LiteLLM 管理 UI 位于 `http://127.0.0.1:4000/ui`，只发布到宿主机回环地址。使用
+`.litellm.env` 中的 `LITELLM_MASTER_KEY` 登录；该 key 只应由受信任的宿主机管理员使用，绝不
+注入 sandbox 或写入自动化日志。
+
+每个 sandbox 的 virtual key 初始为 `$5` 预算、`24h` 预算周期，并在 `Asia/Shanghai` 时区的每日
+零点自动重置；key 本身不按时间过期。打开 UI 的 Keys 页面后，按
+`pi-runner-<sandbox 名称>-...` alias 或 `sandbox_name` metadata 定位对应 key，即可编辑
+`Max Budget`、`Budget Duration` 和其他 LiteLLM 限制。这些改动会立即作用于运行中的 sandbox，
+无需重启 Pi。
+
+需要提前恢复额度时，在对应 key 的详情页使用 **Reset Spend**，它会把当前周期 spend 置为 `$0`，
+但不会更换 key 字符串。不要使用 **Regenerate Key** 或 **Auto-Rotation**：它们会生成新的 key，
+而运行中的 sandbox 不会自动取得新 secret。
+
+UI 对单个 key 的改动不会跨 `down.sh` / `up.sh` 保留：旧 key 会被吊销，新 key 会重新使用
+`litellm/config.yaml` 中的默认值。要修改未来 sandbox 的默认预算或周期，更新该文件后重启
+LiteLLM 容器。已经存在的旧 24 小时到期 key，可在 UI 中设为 Never Expire 并补上预算周期，或执行
+`down.sh` 后再 `up.sh` 以签发新 key。
+
 ### 热更新 Pi 可选模型
 
 模型目录是每个 sandbox 独立、持久化的配置。先在 LiteLLM UI 给该 sandbox 的 virtual key
@@ -532,8 +553,8 @@ curl -sS -X DELETE "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/system-prompt" \
 
 Sandbox 与 LiteLLM 处于同一个 Docker 私网，模型供应商 API 密钥不会进入 sandbox；Pi 只能使用
 它自己的 LiteLLM virtual key。LiteLLM 管理/调试端口仅发布到宿主机 `127.0.0.1:4000`；sandbox
-仍只通过私网访问 `litellm:4000`。每个 sandbox 拿到的 virtual key 仅允许项目模型白名单、24 小时
-有效、总预算 $5；停止或销毁时会立即吊销。
+仍只通过私网访问 `litellm:4000`。每个 sandbox 拿到的 virtual key 仅允许项目模型白名单；默认
+预算为每日 $5（Asia/Shanghai 零点重置），停止或销毁时会立即吊销。
 
 OpenSandbox v0.2.2 的 Docker 后端不能在自定义 Docker network 上同时启用 `networkPolicy`。
 因此当前版本不在创建请求中提交该策略；若需要强制域名级 egress 白名单，应在宿主机防火墙、专用

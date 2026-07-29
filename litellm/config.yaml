@@ -18,17 +18,11 @@ general_settings:
 litellm_settings:
   set_verbose: false
   json_logs: true
+  timezone: "Asia/Shanghai"
   default_key_generate_params:
     models: ["coding-default"]
-    duration: "24h"
     max_budget: 5
-    max_parallel_requests: 2
-    rpm_limit: 30
-    tpm_limit: 1000000
-  upperbound_key_generate_params:
-    models: ["coding-default"]
-    duration: "24h"
-    max_budget: 5
+    budget_duration: "24h"
     max_parallel_requests: 2
     rpm_limit: 30
     tpm_limit: 1000000
