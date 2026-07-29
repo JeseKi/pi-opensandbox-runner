@@ -7,6 +7,7 @@ RUNTIME_DIR="${PROJECT_DIR}/.runtime"
 SERVER_URL="${OPENSANDBOX_SERVER_URL:-http://127.0.0.1:8080}"
 BRIDGE_IMAGE="${PI_RUNNER_IMAGE:-pi-opensandbox-runner:local}"
 LITELLM_ENV_FILE="${PROJECT_DIR}/.litellm.env"
+EGRESS_PROFILES_FILE="${PROJECT_DIR}/config/egress-profiles.json"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -40,6 +41,112 @@ api() {
     --header "OPEN-SANDBOX-API-KEY: $(server_key)" \
     "$@" \
     "${SERVER_URL}${path}"
+}
+
+_trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+validate_egress_domain() {
+  local domain="$1"
+  local bare="$domain"
+  [[ -n "$domain" && ${#domain} -le 253 ]] || return 1
+  [[ "$domain" != *://* && "$domain" != */* && "$domain" != *:* ]] || return 1
+  [[ ! "$domain" =~ ^[0-9.]+$ ]] || return 1
+  if [[ "$domain" == \*.* ]]; then
+    bare="${domain#*.}"
+  elif [[ "$domain" == *'*'* ]]; then
+    return 1
+  fi
+  [[ "$bare" == *.* ]] || return 1
+  [[ "$bare" != *..* && "$bare" != .* && "$bare" != *. ]] || return 1
+  [[ "$bare" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]]
+}
+
+_domains_to_json() {
+  if (($# == 0)); then
+    jq -cn '[]'
+    return
+  fi
+  printf '%s\n' "$@" | LC_ALL=C sort -u | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+resolve_egress_policy() {
+  local allowlist_file="$1"
+  shift
+  local -a profiles=("$@")
+  # Both services stay on the private Docker network. LiteLLM is the model
+  # endpoint; OpenSandbox is the only permitted inbound bridge proxy.
+  local -a domains=("litellm" "opensandbox")
+  local -a custom_domains=()
+  local profile domain raw
+
+  [[ -f "$EGRESS_PROFILES_FILE" ]] || {
+    echo "Missing egress profile config: $EGRESS_PROFILES_FILE" >&2
+    return 1
+  }
+  jq -e '.profiles | type == "object"' "$EGRESS_PROFILES_FILE" >/dev/null || {
+    echo "Invalid egress profile config: $EGRESS_PROFILES_FILE" >&2
+    return 1
+  }
+  if ((${#profiles[@]} == 0)) && [[ -z "$allowlist_file" ]]; then
+    echo "Choose at least one --egress-profile or provide --egress-allowlist." >&2
+    return 1
+  fi
+  for profile in "${profiles[@]}"; do
+    jq -e --arg profile "$profile" '.profiles[$profile] | arrays' "$EGRESS_PROFILES_FILE" >/dev/null || {
+      echo "Unknown egress profile: $profile" >&2
+      return 1
+    }
+    while IFS= read -r domain; do
+      validate_egress_domain "$domain" || {
+        echo "Invalid domain '$domain' in egress profile '$profile'." >&2
+        return 1
+      }
+      domains+=("$domain")
+    done < <(jq -r --arg profile "$profile" '.profiles[$profile][]' "$EGRESS_PROFILES_FILE")
+  done
+  if [[ -n "$allowlist_file" ]]; then
+    [[ -f "$allowlist_file" ]] || {
+      echo "Egress allowlist file not found: $allowlist_file" >&2
+      return 1
+    }
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+      domain="$(_trim "$raw")"
+      [[ -z "$domain" || "$domain" == \#* ]] && continue
+      validate_egress_domain "$domain" || {
+        echo "Invalid domain '$domain' in egress allowlist: $allowlist_file" >&2
+        return 1
+      }
+      custom_domains+=("$domain")
+      domains+=("$domain")
+    done <"$allowlist_file"
+  fi
+
+  RESOLVED_EGRESS_POLICY="$(jq -cn --argjson domains "$(_domains_to_json "${domains[@]}")" \
+    '{defaultAction: "deny", egress: [$domains[] | {action: "allow", target: .}]}')"
+  RESOLVED_EGRESS_PROFILES="$(_domains_to_json "${profiles[@]}")"
+  RESOLVED_EGRESS_CUSTOM_DOMAINS="$(_domains_to_json "${custom_domains[@]}")"
+  RESOLVED_EGRESS_STATE="$(jq -cn \
+    --argjson profiles "$RESOLVED_EGRESS_PROFILES" \
+    --argjson custom_domains "$RESOLVED_EGRESS_CUSTOM_DOMAINS" \
+    --argjson policy "$RESOLVED_EGRESS_POLICY" \
+    '{version: 1, profiles: $profiles, custom_domains: $custom_domains, policy: $policy}')"
+}
+
+load_egress_policy_from_state() {
+  local file="$1"
+  RESOLVED_EGRESS_STATE="$(jq -ce '
+    .egress_policy
+    | select(.version == 1)
+    | select(.policy.defaultAction == "deny" and (.policy.egress | type == "array" and length > 0))
+  ' "$file")" || return 1
+  RESOLVED_EGRESS_POLICY="$(jq -c '.policy' <<<"$RESOLVED_EGRESS_STATE")"
+  RESOLVED_EGRESS_PROFILES="$(jq -c '.profiles // []' <<<"$RESOLVED_EGRESS_STATE")"
+  RESOLVED_EGRESS_CUSTOM_DOMAINS="$(jq -c '.custom_domains // []' <<<"$RESOLVED_EGRESS_STATE")"
 }
 
 ensure_server_config() {
@@ -81,6 +188,10 @@ ensure_server_config() {
     # The server proxy can therefore reach the bridge directly by its
     # container IP; port 8765 is never published on the host.
     echo 'network_mode = "pi-runner-internal"'
+    # Egress policy management is a host-admin operation. Its sidecar API is
+    # bound to Docker's host loopback, so advertise that address rather than
+    # the OpenSandbox server container's private IP.
+    echo 'host_ip = "127.0.0.1"'
     echo 'port_range_min = 40000'
     echo 'port_range_max = 60000'
     echo 'drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]'
@@ -91,8 +202,10 @@ ensure_server_config() {
     echo 'mode = "direct"'
     echo
     echo '[egress]'
-    echo 'image = "opensandbox/egress:v1.1.4"'
-    echo 'mode = "dns"'
+    # v1.1.5 fixes Docker DNS interception when the resolver uses loopback.
+    echo 'image = "pi-runner-egress:local"'
+    echo 'mode = "dns+nft"'
+    echo 'disable_ipv6 = true'
   } >"${RUNTIME_DIR}/opensandbox.toml"
   chmod 600 "${RUNTIME_DIR}/opensandbox.toml"
 }

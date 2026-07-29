@@ -6,8 +6,10 @@ FROM opensandbox/server:v0.2.2
 # Authorization after validating Pi runner's external token in this control
 # plane image, so no Bridge credential is injected into the sandbox.
 COPY scripts/patch-opensandbox-proxy.py /usr/local/bin/patch-opensandbox-proxy
+COPY scripts/patch-opensandbox-networking.py /usr/local/bin/patch-opensandbox-networking
 RUN set -eux; \
     python /usr/local/bin/patch-opensandbox-proxy; \
+    python /usr/local/bin/patch-opensandbox-networking; \
     sed -i 's/DOCKER_PUBLISH_HOST = "0.0.0.0"/DOCKER_PUBLISH_HOST = "127.0.0.1"/' \
         /app/opensandbox_server/services/docker/port_allocator.py; \
     sed -i 's/"44772": ("0.0.0.0"/"44772": ("127.0.0.1"/; s/"8080": ("0.0.0.0"/"8080": ("127.0.0.1"/' \

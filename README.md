@@ -202,8 +202,14 @@ curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
 
 ```bash
 ./scripts/up.sh alice \
+  --egress-profile github \
   --model coding-default
 ```
+
+新 sandbox 必须显式选择至少一个公网 egress profile，或提供自定义域名清单；LiteLLM 私网地址会
+自动加入，不能移除。可用的内置 profile 为 `github`、`npm-global` 与 `npm-cn`。多个 profile 可以
+同时传入，例如需要 GitHub 和官方 npm registry 时使用
+`--egress-profile github --egress-profile npm-global`。
 
 构建时默认使用 `MIRROR_MODE=auto`：若可访问 Google 则使用官方 Debian、PyPI 和 npm
 源，否则切换到清华 Debian/PyPI 镜像及 npmmirror。也可以显式指定，避免自动探测带来的
@@ -212,6 +218,7 @@ curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
 ```bash
 ./scripts/up.sh alice \
   --mirror-mode cn \
+  --egress-profile npm-cn \
   --model coding-default
 ```
 
@@ -234,6 +241,7 @@ curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
 ```bash
 ./scripts/up.sh alice \
   --show-token \
+  --egress-profile github \
   --model coding-default
 ```
 
@@ -253,7 +261,7 @@ curl -sS -X PUT "${BRIDGE_URL}/v1/models/config" \
 ```
 
 升级到外部 proxy token 模型前创建的 sandbox 仍可暂时使用旧 Bridge 鉴权；要移除其容器内的
-旧 bridge token，执行一次 `./scripts/down.sh alice && ./scripts/up.sh alice --model coding-default`。
+旧 bridge token，执行一次 `./scripts/down.sh alice && ./scripts/up.sh alice --egress-profile github --model coding-default`。
 这会签发新 token 和 LiteLLM virtual key，但不会删除两个持久卷。
 
 ## HTTP API
@@ -556,9 +564,46 @@ Sandbox 与 LiteLLM 处于同一个 Docker 私网，模型供应商 API 密钥�
 仍只通过私网访问 `litellm:4000`。每个 sandbox 拿到的 virtual key 仅允许项目模型白名单；默认
 预算为每日 $5（Asia/Shanghai 零点重置），停止或销毁时会立即吊销。
 
-OpenSandbox v0.2.2 的 Docker 后端不能在自定义 Docker network 上同时启用 `networkPolicy`。
-因此当前版本不在创建请求中提交该策略；若需要强制域名级 egress 白名单，应在宿主机防火墙、专用
-egress proxy，或支持该组合的 OpenSandbox 运行时中实施。
+每个 sandbox 都通过 OpenSandbox egress sidecar 使用 `dns+nft` 策略：默认拒绝所有出站连接，
+只有显式允许的 FQDN 才能解析并连接。sidecar 保留 `NET_ADMIN`，sandbox 主容器不保留该能力；IPv6
+也会禁用，避免绕过 IPv4 nftables 规则。Pi runner 对固定的 OpenSandbox v0.2.2 Docker backend
+应用了受版本约束的补丁，使 sidecar 加入同一私网、sandbox 共享其网络命名空间；构建时若上游源码
+结构变化，补丁会失败而不会静默失效。
+
+首次创建受控 sandbox 时，`up.sh` 会自动构建本地 `pi-runner-egress:local` 镜像；它只调整 Docker
+内置 DNS 与 egress DNS 重定向的规则顺序，避免命名网络绕过 FQDN 策略。修改该 Dockerfile 或脚本后，先
+执行 `docker build -f Dockerfile.egress -t pi-runner-egress:local .`，再重建 sandbox。
+
+自定义清单使用“一行一个域名或 `*.example.com`”的文本格式，例如：
+
+```text
+# 允许受信任的 MCP 服务
+mcp.example.com
+*.trusted.example.net
+```
+
+创建时合并 profile 与清单：
+
+```bash
+./scripts/up.sh alice \
+  --egress-profile github \
+  --egress-allowlist .sandbox-egress.txt \
+  --model coding-default
+```
+
+解析后的策略（不含任何 secret）会保存在 `.runtime/alice.json`，因此 `down.sh` 后重新 `up.sh`
+会自动恢复它。运行中的策略只能由宿主机管理员更改：
+
+```bash
+scripts/egress-policy.sh alice show
+scripts/egress-policy.sh alice apply \
+  --egress-profile github \
+  --egress-profile npm-global
+```
+
+`apply` 会完整替换 allowlist，而不是追加规则；它始终保留内部 `litellm` 与 `opensandbox`（后者仅为
+bridge 代理回连）。旧 sandbox 没有 egress
+sidecar，必须先执行 `down.sh` 再带 profile/清单重新创建，不能在运行中升级为受控网络。
 
 ## 本地开发
 

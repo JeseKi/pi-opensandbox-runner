@@ -10,6 +10,8 @@ Usage: scripts/up.sh NAME [options]
 Options:
   --model NAME             LiteLLM model alias (default: coding-default)
   --mcp-env-file PATH      Optional MCP_* credentials injected into sandbox
+  --egress-profile NAME    Add a named outbound-domain profile (repeatable)
+  --egress-allowlist PATH  Add domains from a one-domain-per-line file
   --mirror-mode MODE       auto, cn, or global (default: auto)
   --show-token             Print the bridge bearer token (unsafe in CI logs)
   --cpu VALUE              CPU limit (default: 2)
@@ -32,6 +34,8 @@ validate_name "$NAME"
 
 MODEL="coding-default"
 MCP_ENV_FILE=""
+EGRESS_ALLOWLIST_FILE=""
+declare -a EGRESS_PROFILES=()
 MIRROR_MODE_VALUE="${MIRROR_MODE:-auto}"
 SHOW_TOKEN=false
 CPU="2"
@@ -40,6 +44,8 @@ while (($#)); do
   case "$1" in
     --model) MODEL="$2"; shift 2 ;;
     --mcp-env-file) MCP_ENV_FILE="$2"; shift 2 ;;
+    --egress-profile) EGRESS_PROFILES+=("$2"); shift 2 ;;
+    --egress-allowlist) EGRESS_ALLOWLIST_FILE="$2"; shift 2 ;;
     --mirror-mode) MIRROR_MODE_VALUE="$2"; shift 2 ;;
     --show-token) SHOW_TOKEN=true; shift ;;
     --cpu) CPU="$2"; shift 2 ;;
@@ -70,11 +76,18 @@ ensure_server_config
 if ! docker image inspect pi-opensandbox-runner-opensandbox:local >/dev/null 2>&1; then
   docker compose --project-directory "$PROJECT_DIR" build opensandbox
 fi
+if ! docker image inspect pi-runner-egress:local >/dev/null 2>&1; then
+  docker build --file "$PROJECT_DIR/Dockerfile.egress" --tag pi-runner-egress:local "$PROJECT_DIR"
+fi
 docker compose --project-directory "$PROJECT_DIR" up --detach --no-build
 wait_for_server
 wait_for_litellm
 
 STATE_FILE="$(state_file "$NAME")"
+HAS_EGRESS_INPUT=false
+if ((${#EGRESS_PROFILES[@]} > 0)) || [[ -n "$EGRESS_ALLOWLIST_FILE" ]]; then
+  HAS_EGRESS_INPUT=true
+fi
 if [[ -f "$STATE_FILE" ]]; then
   EXISTING_ID="$(jq -r '.sandbox_id // empty' "$STATE_FILE")"
   if [[ -n "$EXISTING_ID" ]] \
@@ -82,6 +95,14 @@ if [[ -f "$STATE_FILE" ]]; then
     if [[ -z "$(jq -r '.bridge_proxy_token // empty' "$STATE_FILE")" ]]; then
       echo "Sandbox '$NAME' uses the legacy bridge-token model." >&2
       echo "Run scripts/down.sh $NAME, then rerun this command to migrate without deleting volumes." >&2
+      exit 1
+    fi
+    if ! load_egress_policy_from_state "$STATE_FILE"; then
+      echo "Sandbox '$NAME' has unrestricted legacy egress; run scripts/down.sh $NAME, then recreate it with an egress profile or allowlist." >&2
+      exit 1
+    fi
+    if [[ "$HAS_EGRESS_INPUT" == true ]]; then
+      echo "Sandbox '$NAME' is already running; use scripts/egress-policy.sh $NAME apply to change its egress policy." >&2
       exit 1
     fi
     echo "Sandbox '$NAME' is already running."
@@ -103,6 +124,15 @@ if [[ -f "$STATE_FILE" ]]; then
     chmod 600 "$UPDATED"
     mv "$UPDATED" "$STATE_FILE"
   fi
+fi
+
+if [[ "$HAS_EGRESS_INPUT" == true ]]; then
+  resolve_egress_policy "$EGRESS_ALLOWLIST_FILE" "${EGRESS_PROFILES[@]}"
+elif [[ -f "$STATE_FILE" ]] && load_egress_policy_from_state "$STATE_FILE"; then
+  :
+else
+  echo "Choose at least one --egress-profile or provide --egress-allowlist for '$NAME'." >&2
+  exit 2
 fi
 
 # Rebuilding a shared Docker tag discards the image metadata that OpenSandbox
@@ -162,12 +192,14 @@ PAYLOAD="$(jq -n \
   --arg pi_volume "pi-runner-${NAME}-pi" \
   --arg workspace_volume "pi-runner-${NAME}-workspace" \
   --argjson env "$ENV_JSON" \
+  --argjson network_policy "$RESOLVED_EGRESS_POLICY" \
   '{
     image: {uri: $image},
     entrypoint: ["/usr/local/bin/pi-runner-entrypoint"],
     timeout: null,
     resourceLimits: {cpu: $cpu, memory: $memory},
     env: $env,
+    networkPolicy: $network_policy,
     metadata: {
       name: $name,
       component: "pi-opensandbox-runner",
@@ -251,6 +283,7 @@ jq -n \
   --arg litellm_key "$LITELLM_KEY" \
   --arg pi_volume "pi-runner-${NAME}-pi" \
   --arg workspace_volume "pi-runner-${NAME}-workspace" \
+  --argjson egress_policy "$RESOLVED_EGRESS_STATE" \
   '{
     name: $name,
     sandbox_id: $sandbox_id,
@@ -258,6 +291,7 @@ jq -n \
     bridge_proxy_token: $bridge_proxy_token,
     litellm_virtual_key: $litellm_key,
     litellm_revocation_pending: false,
+    egress_policy: $egress_policy,
     pi_volume: $pi_volume,
     workspace_volume: $workspace_volume
   }' >"$STATE_FILE"

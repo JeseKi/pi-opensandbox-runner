@@ -1,0 +1,6 @@
+FROM opensandbox/egress:v1.1.5
+
+COPY scripts/egress-entrypoint.sh /usr/local/bin/pi-runner-egress-entrypoint
+RUN chmod 755 /usr/local/bin/pi-runner-egress-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/pi-runner-egress-entrypoint"]
