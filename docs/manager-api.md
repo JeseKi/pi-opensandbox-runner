@@ -227,10 +227,10 @@ POST   /v1/instances/{subject_ref}/terminals/{terminal_id}/tickets
 WS     /v1/terminal-connections
 ```
 
-列表的 `session_id` 为可选 external Session ID。提供后，Manager 会在数据库分页查询阶段只
-返回绑定到该 Session 的 Terminal；Session 不存在时返回 `404 session_not_found`。`state`
-精确筛选 Terminal 状态，并与 `session_id` 按 AND 组合。使用 `next_cursor` 翻页时必须保持
-所有筛选条件不变。
+列表的 `session_id` 为可选 external Session ID 快照。Terminal 创建时会保存该快照，因此
+Session 硬删除后仍可查询原来关联的 Terminal；没有匹配项时返回空列表。`state` 精确筛选
+Terminal 状态，并与 `session_id` 按 AND 组合。使用 `next_cursor` 翻页时必须保持所有筛选
+条件不变。
 
 这些 REST API 需要 `terminals:access` scope。浏览器只连接最后一个 WebSocket 路径，并通过
 Sec-WebSocket-Protocol 提交 ticket；不能把 service token 交给浏览器。Terminal 与 Agent

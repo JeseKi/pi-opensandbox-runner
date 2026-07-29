@@ -559,6 +559,7 @@ def test_manager_terminal_lifecycle_and_one_time_ticket(
             json={},
         )
         assert root_terminal.status_code == 201
+        assert root_terminal.json()["session_id"] is None
 
         filtered = client.get(
             "/v1/instances/terminal-user/terminals",
@@ -590,8 +591,28 @@ def test_manager_terminal_lifecycle_and_one_time_ticket(
             headers=headers,
             params={"session_id": "missing-session"},
         )
-        assert missing_session.status_code == 404
-        assert missing_session.json()["code"] == "session_not_found"
+        assert missing_session.status_code == 200
+        assert missing_session.json()["items"] == []
+
+        with database.session() as db:
+            session_binding = db.get(SessionBinding, "terminal-session-binding")
+            assert session_binding is not None
+            db.delete(session_binding)
+
+        with database.session() as db:
+            stored_terminal = db.get(TerminalBinding, terminal["id"])
+            assert stored_terminal is not None
+            assert stored_terminal.session_binding_id is None
+            assert stored_terminal.external_session_id == "session-1"
+
+        historical = client.get(
+            "/v1/instances/terminal-user/terminals",
+            headers=headers,
+            params={"session_id": "session-1"},
+        )
+        assert historical.status_code == 200
+        assert [item["id"] for item in historical.json()["items"]] == [terminal["id"]]
+        assert historical.json()["items"][0]["session_id"] == "session-1"
 
         status = client.get(
             f"/v1/instances/terminal-user/terminals/{terminal['id']}",

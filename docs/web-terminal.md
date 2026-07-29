@@ -72,8 +72,9 @@ curl -sS \
   -H "$AUTH" | jq
 ```
 
-`session_id` 不存在时返回 `404 session_not_found`；`state` 对 Terminal 状态做精确筛选，
-并与 `session_id` 按 AND 组合。使用 `next_cursor` 翻页时必须保持所有筛选条件不变。
+`session_id` 按 Terminal 创建时保存的 external Session ID 快照筛选；原 Session 删除后，
+Terminal 仍保留该快照并可继续被筛选。没有匹配项时返回空列表。`state` 对 Terminal 状态做
+精确筛选，并与 `session_id` 按 AND 组合。使用 `next_cursor` 翻页时必须保持所有筛选条件不变。
 
 完成最终用户授权后，后端为浏览器页面的精确 Origin 签发 ticket：
 

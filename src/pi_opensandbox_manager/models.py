@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -193,6 +194,7 @@ class TerminalBinding(Base):
     session_binding_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("manager_session_bindings.id", ondelete="SET NULL")
     )
+    external_session_id: Mapped[str | None] = mapped_column(String(120))
     upstream_terminal_id: Mapped[str] = mapped_column(String(160), nullable=False)
     cwd: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(String(24), default="created", nullable=False)
@@ -204,6 +206,15 @@ class TerminalBinding(Base):
     connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_manager_terminal_instance_state", "instance_id", "state"),
+        Index(
+            "ix_manager_terminal_instance_session",
+            "instance_id",
+            "external_session_id",
+        ),
+    )
 
 
 class TerminalTicket(Base):

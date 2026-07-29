@@ -255,7 +255,9 @@ class TerminalCreate(BaseModel):
 class TerminalOut(BaseModel):
     id: str = Field(description="Manager 生成的 Terminal UUID。")
     subject_ref: str = Field(description="Terminal 所属的 Instance 主体标识。")
-    session_id: str | None = Field(description="用于选择初始 cwd 的可选 Session ID。")
+    session_id: str | None = Field(
+        description="用于选择初始 cwd 的可选 external Session ID 快照。"
+    )
     cwd: str = Field(description="Terminal 初始目录；不是文件权限边界。")
     state: str = Field(description="created、connected、detached、exited、closed 或 unavailable。")
     output_offset: int = Field(description="用于断线 replay 的 Execd 字节游标。")

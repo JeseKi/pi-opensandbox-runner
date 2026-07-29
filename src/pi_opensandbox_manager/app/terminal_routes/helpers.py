@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from ...crypto import CredentialCipher
 from ...database import ManagerDatabase
-from ...models import RunnerInstance, SessionBinding, TerminalBinding
+from ...models import RunnerInstance, TerminalBinding
 from ...problems import ManagerProblem
 from ...schemas import TerminalOut
 from ...security import Principal
@@ -36,18 +36,13 @@ def _load_owned_terminal(
 
 
 def _terminal_out(
-    db: Any,
     terminal: TerminalBinding,
     instance: RunnerInstance,
 ) -> TerminalOut:
-    session_id = None
-    if terminal.session_binding_id:
-        session = db.get(SessionBinding, terminal.session_binding_id)
-        session_id = session.external_session_id if session else None
     return TerminalOut(
         id=terminal.id,
         subject_ref=instance.subject_ref,
-        session_id=session_id,
+        session_id=terminal.external_session_id,
         cwd=terminal.cwd,
         state=terminal.state,
         output_offset=terminal.output_offset,

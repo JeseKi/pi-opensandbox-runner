@@ -94,6 +94,9 @@ def register_terminal_crud_routes(
             id=str(uuid4()),
             instance_id=instance_id,
             session_binding_id=session_binding_id,
+            external_session_id=(
+                session_binding.external_session_id if session_binding else None
+            ),
             upstream_terminal_id=str(upstream["session_id"]),
             cwd=cwd,
             state="created",
@@ -104,7 +107,7 @@ def register_terminal_crud_routes(
             db.flush()
             current_instance = db.get(RunnerInstance, instance_id)
             assert current_instance is not None
-            return _terminal_out(db, terminal, current_instance)
+            return _terminal_out(terminal, current_instance)
 
     @app.get(
         "/v1/instances/{subject_ref}/terminals",
@@ -113,9 +116,9 @@ def register_terminal_crud_routes(
             summary="分页列出 Terminal",
             description=(
                 "列出当前 consumer 的 Instance Terminal，固定按创建时间倒序排列。可选 "
-                "`session_id` 在数据库查询阶段筛选绑定到指定 external Session 的 Terminal；"
-                "Session 不存在时返回 `404 session_not_found`。可选 `state` 精确筛选 Terminal "
-                "状态；多个条件按 AND 组合。需要 `terminals:access` scope。"
+                "`session_id` 按创建时保存的 external Session ID 快照筛选，因此 Session 删除后"
+                "仍可查询其 Terminal。可选 `state` 精确筛选 Terminal 状态；多个条件按 AND "
+                "组合。需要 `terminals:access` scope。"
             ),
             tag="Terminal（交互终端）",
             operation_id="list_manager_terminals",
@@ -128,7 +131,7 @@ def register_terminal_crud_routes(
             default=None,
             min_length=1,
             max_length=120,
-            description="可选 external Session ID；提供后只返回绑定到该 Session 的 Terminal。",
+            description="可选 external Session ID 快照；Session 删除后仍可用于历史筛选。",
         ),
         state_filter: Literal[
             "created",
@@ -155,16 +158,8 @@ def register_terminal_crud_routes(
                 TerminalBinding.instance_id == instance.id
             )
             if session_id is not None:
-                session_binding = db.scalar(
-                    select(SessionBinding).where(
-                        SessionBinding.instance_id == instance.id,
-                        SessionBinding.external_session_id == session_id,
-                    )
-                )
-                if session_binding is None:
-                    raise ManagerProblem(404, "session_not_found", "session not found")
                 statement = statement.where(
-                    TerminalBinding.session_binding_id == session_binding.id
+                    TerminalBinding.external_session_id == session_id
                 )
             if state_filter is not None:
                 statement = statement.where(TerminalBinding.state == state_filter)
@@ -189,7 +184,7 @@ def register_terminal_crud_routes(
             has_more = len(records) > limit
             page = records[:limit]
             return TerminalPage(
-                items=[_terminal_out(db, item, instance) for item in page],
+                items=[_terminal_out(item, instance) for item in page],
                 next_cursor=(
                     _encode_page_cursor(page[-1].created_at, page[-1].id)
                     if has_more and page
@@ -247,7 +242,7 @@ def register_terminal_crud_routes(
             db.flush()
             current_instance = db.get(RunnerInstance, instance.id)
             assert current_instance is not None
-            return _terminal_out(db, stored, current_instance)
+            return _terminal_out(stored, current_instance)
 
     @app.delete(
         "/v1/instances/{subject_ref}/terminals/{terminal_id}",
