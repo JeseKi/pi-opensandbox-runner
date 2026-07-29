@@ -48,7 +48,7 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/pi_opensandbox_manager/app.py" = ["B008"]
+"src/pi_opensandbox_manager/app/*.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.13"
