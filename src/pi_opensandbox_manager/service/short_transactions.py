@@ -27,7 +27,7 @@ def seed_catalog(db: Session) -> None:
             id=str(uuid4()),
             slug="coding-default",
             label="Coding Default",
-            provider_model="deepseek/deepseek-v4-pro",
+            provider_model="deepseek/deepseek-v4-flash",
             api="openai-completions",
             secret_ref="DEEPSEEK_API_KEY",
             context_window=264_000,

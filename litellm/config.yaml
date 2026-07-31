@@ -3,7 +3,7 @@
 model_list:
   - model_name: coding-default
     litellm_params:
-      model: deepseek/deepseek-v4-pro
+      model: deepseek/deepseek-v4-flash
       api_key: os.environ/DEEPSEEK_API_KEY
       api_base: https://api.deepseek.com/v1
   - model_name: gpt-5.6-terra
