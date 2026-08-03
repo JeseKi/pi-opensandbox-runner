@@ -55,7 +55,10 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Filesystem（容器文件系统）",
-        "description": "高危能力：访问用户 Runner 容器中的任意绝对文件路径。",
+        "description": (
+            "高危能力：访问用户 Runner 容器中的任意绝对文件路径。"
+            "本组接口不提供建目录操作；需要创建目录时请使用 Command 接口执行 `mkdir -p`。"
+        ),
     },
     {
         "name": "Command（后台命令）",

@@ -246,7 +246,8 @@ POST   /v1/instances/{subject_ref}/filesystem/upload
 这些接口需要 `filesystem:access` scope。读取可透传 Range 或 offset/limit；完整读取返回强
 ETag。文本更新和删除必须携带该 ETag；上传使用 multipart/form-data（`path`、`file`）并必须
 携带 `If-None-Match: *`，因此不会覆盖已有文件。路径必须为绝对路径；不支持建目录、递归删除
-或覆盖上传。该能力可读取运行时敏感文件，Manager 不应直接暴露到公网。
+或覆盖上传。需要创建目录时，请通过 Command 接口执行 `mkdir -p <path>`。该能力可读取运行时
+敏感文件，Manager 不应直接暴露到公网。
 
 ## WebTerminal
 
