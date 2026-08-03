@@ -61,12 +61,27 @@ Manager 在启动时立即、随后每 `RUNNER_MANAGER_SANDBOX_HEALTHCHECK_SECON
 
 ## Model 与 Policy
 
-Manager 首次启动创建 `coding-default` model 和 `consumer-default` policy。Policy 统一定义：
+`config/runner-catalog.json` 是 Manager 模型与 Policy 的唯一写来源。文件统一定义：
 
 - 可用模型与默认模型；
 - CPU、内存和最大活动 Session；
 - LiteLLM 预算周期、RPM、TPM 和并发；
 - sandbox egress domains。
+
+Compose 将该文件以只读方式挂载给 Manager；部署时原子替换文件，Manager 每
+`RUNNER_MANAGER_CATALOG_RELOAD_SECONDS`（默认 5）秒校验并同步一次。有效变更会发布新的
+不可变 revision；已有 Instance 在下一次 ensure 时切换并重新 provision。无效变更不会影响
+最后一次有效 catalog，首次启动遇到无效或缺失配置会失败。
+
+默认 `consumer-default` 放行 Dockerfile 使用的 GitHub、apt、pip、npm 官方源和国内镜像源，
+方便可信 sandbox 在运行时安装依赖。`litellm` 与 `opensandbox` 始终由 Manager 额外放行，不能写入
+配置文件的 `egress_domains`。
+
+配置结构为 `{ "version": 1, "models": [...], "policies": [...] }`。`models` 条目包含
+`slug`、`label`、`provider_model`、`api`、`secret_ref`、`context_window`、`max_tokens` 和
+`reasoning`；`policies` 条目包含现有 Policy 的全部资源、限流和 egress 字段。slug、模型引用和
+域名都在加载时校验。删除条目会将其从 catalog 下架：不能创建新的 Instance/Session，但历史实例
+和 sandbox recovery 继续使用数据库保存的版本快照。
 
 列出已发布配置：
 
@@ -77,10 +92,10 @@ uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" policies
 
 CLI 只读取已发布的 Manager catalog，不验证 LiteLLM 上游的实时可用性。
 
-新增 model 或发布新 Policy revision 使用 admin token 调用 `/admin/v1/models` 和
-`/admin/v1/policies`。Model API 只发布 Manager/Bridge catalog 元数据，不会创建 LiteLLM
-上游路由；必须先在 `litellm/config.yaml` 或 LiteLLM 管理面配置同名 alias，确认它可调用后，
-再发布 Manager Model。`provider_model` 和 `secret_ref` 当前仅作为控制面元数据保存。
+修改 `runner-catalog.json` 不会创建 LiteLLM 上游路由。新增模型前，仍须先在
+`litellm/config.yaml` 或 LiteLLM 管理面配置并验证同名 alias。`provider_model` 和 `secret_ref`
+仅作为 Manager 控制面元数据保存。旧的 `/admin/v1/models` 和 `/admin/v1/policies` 写接口保留，
+但固定返回 `409 catalog_file_managed`。
 
 业务管理员只为用户选择 Policy slug，不直接编辑 LiteLLM key 或 OpenSandbox 参数。使用新
 Policy 再次 ensure Instance 会轮换实例凭据并重新 provision。`reconcile` 不轮换凭据；它复用

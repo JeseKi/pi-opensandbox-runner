@@ -17,6 +17,8 @@ class ManagerSettings:
     bootstrap_consumer_slug: str = "agent-runner"
     bootstrap_service_token: str = ""
     bootstrap_admin_token: str = ""
+    catalog_path: Path = Path("config/runner-catalog.json")
+    catalog_reload_seconds: float = 5.0
     operation_poll_seconds: float = 0.5
     http_timeout_seconds: float = 30.0
     provision_timeout_seconds: float = 180.0
@@ -49,6 +51,12 @@ class ManagerSettings:
             bootstrap_consumer_slug=os.getenv("RUNNER_MANAGER_BOOTSTRAP_CONSUMER", "agent-runner"),
             bootstrap_service_token=os.getenv("RUNNER_MANAGER_BOOTSTRAP_SERVICE_TOKEN", ""),
             bootstrap_admin_token=os.getenv("RUNNER_MANAGER_BOOTSTRAP_ADMIN_TOKEN", ""),
+            catalog_path=Path(
+                os.getenv("RUNNER_MANAGER_CATALOG_PATH", "config/runner-catalog.json")
+            ),
+            catalog_reload_seconds=float(
+                os.getenv("RUNNER_MANAGER_CATALOG_RELOAD_SECONDS", "5")
+            ),
             operation_poll_seconds=float(os.getenv("RUNNER_MANAGER_OPERATION_POLL_SECONDS", "0.5")),
             http_timeout_seconds=float(os.getenv("RUNNER_MANAGER_HTTP_TIMEOUT_SECONDS", "30")),
             provision_timeout_seconds=float(

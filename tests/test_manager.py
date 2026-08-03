@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -75,6 +77,13 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
         assert response.json()[0]["slug"] == "coding-default"
         assert response.headers["Runner-Protocol-Version"] == "1"
 
+        admin = client.post(
+            "/admin/v1/policies",
+            headers={"Authorization": "Bearer rm_adm_test"},
+        )
+        assert admin.status_code == 409
+        assert admin.json()["code"] == "catalog_file_managed"
+
         openapi = client.get("/v1/openapi.json")
         assert openapi.status_code == 200
         schema = openapi.json()
@@ -128,6 +137,33 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
         assert command_schema["properties"]["timeout"]["anyOf"][0]["maximum"] == 86_400_000
 
 
+def test_manager_hot_reloads_catalog_and_keeps_last_valid_snapshot(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "catalog.json"
+    catalog = json.loads(Path("config/runner-catalog.json").read_text(encoding="utf-8"))
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    configured = replace(
+        settings(tmp_path), catalog_path=catalog_path, catalog_reload_seconds=0.01
+    )
+    app = create_manager_app(configured)
+    headers = {"Authorization": "Bearer rm_svc_test"}
+    with TestClient(app) as client:
+        catalog["models"][0]["label"] = "Coding Reloaded"
+        staged_path = catalog_path.with_suffix(".next")
+        staged_path.write_text(json.dumps(catalog), encoding="utf-8")
+        staged_path.replace(catalog_path)
+        time.sleep(0.5)
+        models = client.get("/v1/catalog/models", headers=headers)
+        policies = client.get("/v1/catalog/policies", headers=headers)
+        assert models.json()[0]["label"] == "Coding Reloaded"
+        assert policies.json()[0]["revision"] == 2
+
+        catalog_path.write_text("{", encoding="utf-8")
+        time.sleep(0.5)
+        models = client.get("/v1/catalog/models", headers=headers)
+        assert models.json()[0]["label"] == "Coding Reloaded"
+        assert app.state.catalog_error is not None
+
+
 def test_manager_event_keeps_complete_journal_envelope() -> None:
     raw = {
         "seq": 12,
@@ -172,6 +208,29 @@ def test_ensure_instance_and_job_are_idempotent(tmp_path: Path) -> None:
         assert operation.id == first_operation_id
         assert db.query(RunnerInstance).count() == 1
         assert db.query(ManagerOperation).count() == 1
+    database.dispose()
+
+
+def test_seed_catalog_publishes_default_package_registry_egress_policy(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    with database.session() as db:
+        seed_catalog(db)
+        policy = db.query(RunnerPolicy).filter_by(
+            slug="consumer-default", state="published"
+        ).one()
+        domains = set(json.loads(policy.egress_domains_json))
+
+    assert {
+        "deb.debian.org",
+        "mirrors.tuna.tsinghua.edu.cn",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "pypi.tuna.tsinghua.edu.cn",
+        "registry.npmjs.org",
+        "registry.npmmirror.com",
+    } <= domains
     database.dispose()
 
 

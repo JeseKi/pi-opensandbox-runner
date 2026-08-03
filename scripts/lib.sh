@@ -7,7 +7,7 @@ RUNTIME_DIR="${PROJECT_DIR}/.runtime"
 SERVER_URL="${OPENSANDBOX_SERVER_URL:-http://127.0.0.1:8080}"
 BRIDGE_IMAGE="${PI_RUNNER_IMAGE:-pi-opensandbox-runner:local}"
 LITELLM_ENV_FILE="${PROJECT_DIR}/.litellm.env"
-EGRESS_PROFILES_FILE="${PROJECT_DIR}/config/egress-profiles.json"
+RUNNER_CATALOG_FILE="${PROJECT_DIR}/config/runner-catalog.json"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -75,66 +75,63 @@ _domains_to_json() {
 }
 
 resolve_egress_policy() {
-  local allowlist_file="$1"
-  shift
-  local -a profiles=("$@")
+  local policy_slug="$1"
   # Both services stay on the private Docker network. LiteLLM is the model
   # endpoint; OpenSandbox is the only permitted inbound bridge proxy.
   local -a domains=("litellm" "opensandbox")
-  local -a custom_domains=()
-  local profile domain raw
+  local domain
 
-  [[ -f "$EGRESS_PROFILES_FILE" ]] || {
-    echo "Missing egress profile config: $EGRESS_PROFILES_FILE" >&2
+  [[ -f "$RUNNER_CATALOG_FILE" ]] || {
+    echo "Missing runner catalog config: $RUNNER_CATALOG_FILE" >&2
     return 1
   }
-  jq -e '.profiles | type == "object"' "$EGRESS_PROFILES_FILE" >/dev/null || {
-    echo "Invalid egress profile config: $EGRESS_PROFILES_FILE" >&2
+  jq -e --arg policy "$policy_slug" '
+    .policies[] | select(.slug == $policy) | .egress_domains | arrays
+  ' "$RUNNER_CATALOG_FILE" >/dev/null || {
+    echo "Unknown runner catalog policy: $policy_slug" >&2
     return 1
   }
-  if ((${#profiles[@]} == 0)) && [[ -z "$allowlist_file" ]]; then
-    echo "Choose at least one --egress-profile or provide --egress-allowlist." >&2
-    return 1
-  fi
-  for profile in "${profiles[@]}"; do
-    jq -e --arg profile "$profile" '.profiles[$profile] | arrays' "$EGRESS_PROFILES_FILE" >/dev/null || {
-      echo "Unknown egress profile: $profile" >&2
-      return 1
-    }
-    while IFS= read -r domain; do
-      validate_egress_domain "$domain" || {
-        echo "Invalid domain '$domain' in egress profile '$profile'." >&2
-        return 1
-      }
-      domains+=("$domain")
-    done < <(jq -r --arg profile "$profile" '.profiles[$profile][]' "$EGRESS_PROFILES_FILE")
-  done
-  if [[ -n "$allowlist_file" ]]; then
-    [[ -f "$allowlist_file" ]] || {
-      echo "Egress allowlist file not found: $allowlist_file" >&2
-      return 1
-    }
-    while IFS= read -r raw || [[ -n "$raw" ]]; do
-      domain="$(_trim "$raw")"
-      [[ -z "$domain" || "$domain" == \#* ]] && continue
-      validate_egress_domain "$domain" || {
-        echo "Invalid domain '$domain' in egress allowlist: $allowlist_file" >&2
-        return 1
-      }
-      custom_domains+=("$domain")
-      domains+=("$domain")
-    done <"$allowlist_file"
-  fi
+  while IFS= read -r domain; do
+    validate_egress_domain "$domain" || { echo "Invalid catalog domain '$domain'." >&2; return 1; }
+    domains+=("$domain")
+  done < <(jq -r --arg policy "$policy_slug" '.policies[] | select(.slug == $policy) | .egress_domains[]' "$RUNNER_CATALOG_FILE")
 
   RESOLVED_EGRESS_POLICY="$(jq -cn --argjson domains "$(_domains_to_json "${domains[@]}")" \
     '{defaultAction: "deny", egress: [$domains[] | {action: "allow", target: .}]}')"
-  RESOLVED_EGRESS_PROFILES="$(_domains_to_json "${profiles[@]}")"
-  RESOLVED_EGRESS_CUSTOM_DOMAINS="$(_domains_to_json "${custom_domains[@]}")"
   RESOLVED_EGRESS_STATE="$(jq -cn \
-    --argjson profiles "$RESOLVED_EGRESS_PROFILES" \
-    --argjson custom_domains "$RESOLVED_EGRESS_CUSTOM_DOMAINS" \
+    --arg policy_slug "$policy_slug" \
     --argjson policy "$RESOLVED_EGRESS_POLICY" \
-    '{version: 1, profiles: $profiles, custom_domains: $custom_domains, policy: $policy}')"
+    '{version: 1, policy_slug: $policy_slug, policy: $policy}')"
+}
+
+bridge_model_config() {
+  local policy_slug="$1"
+  jq -ce --arg policy "$policy_slug" '
+    . as $catalog
+    | ($catalog.policies[] | select(.slug == $policy)) as $policy
+    | {
+        providers: {
+          litellm: {
+            baseUrl: "http://litellm:4000/v1",
+            api: "openai-completions",
+            apiKey: "$LITELLM_VIRTUAL_KEY",
+            authHeader: true,
+            models: [
+              $policy.model_slugs[] as $slug
+              | ($catalog.models[] | select(.slug == $slug))
+              | {
+                  id: .slug,
+                  name: .label,
+                  reasoning: .reasoning,
+                  input: ["text"],
+                  contextWindow: .context_window,
+                  maxTokens: .max_tokens
+                }
+            ]
+          }
+        }
+      }
+  ' "$RUNNER_CATALOG_FILE"
 }
 
 load_egress_policy_from_state() {
@@ -145,8 +142,7 @@ load_egress_policy_from_state() {
     | select(.policy.defaultAction == "deny" and (.policy.egress | type == "array" and length > 0))
   ' "$file")" || return 1
   RESOLVED_EGRESS_POLICY="$(jq -c '.policy' <<<"$RESOLVED_EGRESS_STATE")"
-  RESOLVED_EGRESS_PROFILES="$(jq -c '.profiles // []' <<<"$RESOLVED_EGRESS_STATE")"
-  RESOLVED_EGRESS_CUSTOM_DOMAINS="$(jq -c '.custom_domains // []' <<<"$RESOLVED_EGRESS_STATE")"
+  RESOLVED_EGRESS_POLICY_SLUG="$(jq -r '.policy_slug // ""' <<<"$RESOLVED_EGRESS_STATE")"
 }
 
 ensure_server_config() {

@@ -11,7 +11,7 @@ Pi Runner Manager 是 `agent-runner` 等内部业务系统访问 Pi/OpenSandbox 
 ## 鉴权
 
 - `/v1/**` 使用 **service token**，并按 consumer 隔离数据。
-- `/admin/v1/**` 使用 **admin token**，仅供内部平台发布模型和 Policy。
+- `/admin/v1/**` 使用 **admin token**，仅保留用于兼容旧客户端；模型和 Policy 由配置文件管理。
 - 点击右上角 **Authorize**，输入 token 本身即可；Swagger 会自动添加 `Bearer` 前缀。
 - 不要把 admin token 配置到 `agent-runner`，也不要把 Manager 直接暴露到公网。
 
@@ -67,7 +67,7 @@ OPENAPI_TAGS = [
     },
     {
         "name": "Admin（内部管理）",
-        "description": "仅供核心平台使用 admin token 发布模型与 Policy revision。",
+        "description": "已弃用的配置写接口；模型和 Policy revision 由 catalog 文件发布。",
     },
 ]
 

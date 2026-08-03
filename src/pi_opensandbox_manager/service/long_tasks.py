@@ -118,17 +118,22 @@ class OperationExecutor:
             if policy is None:
                 raise ManagerProblem(422, "policy_not_found", "policy not found")
             model_slugs = json.loads(policy.model_slugs_json)
+            model_revisions = json.loads(policy.model_revisions_json or "{}")
             models = list(
                 db.scalars(
                     select(ModelDeployment).where(
                         ModelDeployment.slug.in_(model_slugs),
-                        ModelDeployment.state == "published",
                     )
                 )
             )
-            if len(models) != len(model_slugs):
+            pinned_models = {
+                model.slug: model
+                for model in models
+                if model.revision == model_revisions.get(model.slug)
+            }
+            if len(pinned_models) != len(model_slugs):
                 raise ManagerProblem(
-                    422, "model_policy_invalid", "policy references unpublished models"
+                    422, "model_policy_invalid", "policy references unavailable model snapshots"
                 )
             if not instance.bridge_token_encrypted or not instance.litellm_key_encrypted:
                 raise ManagerProblem(
@@ -159,14 +164,14 @@ class OperationExecutor:
                 },
                 models=[
                     {
-                        "slug": model.slug,
-                        "label": model.label,
-                        "api": model.api,
-                        "context_window": model.context_window,
-                        "max_tokens": model.max_tokens,
-                        "reasoning": model.reasoning,
+                        "slug": pinned_models[slug].slug,
+                        "label": pinned_models[slug].label,
+                        "api": pinned_models[slug].api,
+                        "context_window": pinned_models[slug].context_window,
+                        "max_tokens": pinned_models[slug].max_tokens,
+                        "reasoning": pinned_models[slug].reasoning,
                     }
-                    for model in models
+                    for slug in model_slugs
                 ],
             )
 

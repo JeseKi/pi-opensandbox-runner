@@ -14,6 +14,7 @@ from ..crypto import CredentialCipher
 from ..database import ManagerDatabase
 from ..models import (
     ManagerOperation,
+    ModelDeployment,
     RunnerInstance,
     RunnerPolicy,
     SessionBinding,
@@ -109,6 +110,23 @@ def _prepare_session(
             )
         )
         if binding is None:
+            policy = db.get(RunnerPolicy, instance.policy_id)
+            if policy is None or policy.state == "retired":
+                raise ManagerProblem(
+                    422, "policy_not_published", "runner policy is not published"
+                )
+            if payload.model_slug not in json.loads(policy.model_slugs_json):
+                raise ManagerProblem(
+                    422, "model_not_allowed", "model is not allowed by runner policy"
+                )
+            model = db.scalar(
+                select(ModelDeployment).where(
+                    ModelDeployment.slug == payload.model_slug,
+                    ModelDeployment.state == "published",
+                )
+            )
+            if model is None:
+                raise ManagerProblem(422, "model_not_published", "model is not published")
             binding = SessionBinding(
                 id=str(uuid4()),
                 instance_id=instance.id,
@@ -263,5 +281,3 @@ def _instance_operation(
             instance=_instance_out(instance, policy),
             operation=_operation_out(operation),
         )
-
-

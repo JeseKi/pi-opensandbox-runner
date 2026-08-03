@@ -7,7 +7,7 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/egress-policy.sh NAME show
-  scripts/egress-policy.sh NAME apply [--egress-profile NAME]... [--egress-allowlist PATH]
+  scripts/egress-policy.sh NAME apply [--policy SLUG]
 
 Only a host administrator can run this command. apply replaces the complete
 allowlist; it always retains the internal LiteLLM destination.
@@ -52,16 +52,14 @@ case "$ACTION" in
     egress_request GET /policy | jq
     ;;
   apply)
-    EGRESS_ALLOWLIST_FILE=""
-    declare -a EGRESS_PROFILES=()
+    POLICY="consumer-default"
     while (($#)); do
       case "$1" in
-        --egress-profile) EGRESS_PROFILES+=("$2"); shift 2 ;;
-        --egress-allowlist) EGRESS_ALLOWLIST_FILE="$2"; shift 2 ;;
+        --policy) POLICY="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
       esac
     done
-    resolve_egress_policy "$EGRESS_ALLOWLIST_FILE" "${EGRESS_PROFILES[@]}"
+    resolve_egress_policy "$POLICY"
     egress_request POST /policy "$RESOLVED_EGRESS_POLICY" | jq
     UPDATED="$(mktemp "${RUNTIME_DIR}/${NAME}.XXXXXX")"
     jq --argjson egress_policy "$RESOLVED_EGRESS_STATE" '.egress_policy = $egress_policy' \

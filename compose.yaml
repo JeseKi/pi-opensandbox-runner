@@ -70,6 +70,7 @@ services:
       LITELLM_BASE_URL: http://litellm:4000
     volumes:
       - manager-data:/app/data
+      - ./config/runner-catalog.json:/app/config/runner-catalog.json:ro
     ports:
       - "127.0.0.1:8090:8090"
     depends_on:

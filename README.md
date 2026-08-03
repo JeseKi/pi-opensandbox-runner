@@ -95,9 +95,9 @@ docker compose up -d --build
 `.env` 通过 `COMPOSE_FILE` 加载 `compose.dev.yaml`，只额外发布回环地址上的 `8080` 和
 `4000`。不要把本地 `.env` 部署到生产环境。
 
-Manager 首次启动会执行 Alembic migration，并在 SQLite 中创建默认
-`coding-default` model、`consumer-default` policy 和 bootstrap consumer。只有配置了非空且
-互不相同的 bootstrap service/admin token 时，才会创建对应 token。
+Manager 首次启动会执行 Alembic migration，并根据 `config/runner-catalog.json` 发布模型和
+Policy 快照，再创建 bootstrap consumer。只有配置了非空且互不相同的 bootstrap service/admin
+token 时，才会创建对应 token。
 
 ## 接入 agent-runner
 

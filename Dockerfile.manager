@@ -40,6 +40,7 @@ RUN uv export \
         /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 COPY src ./src
+COPY config/runner-catalog.json ./config/runner-catalog.json
 RUN uv pip install \
         --python .venv/bin/python \
         --no-deps \

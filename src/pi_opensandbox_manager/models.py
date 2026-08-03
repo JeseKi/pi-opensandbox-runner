@@ -49,7 +49,7 @@ class ModelDeployment(Base):
     __tablename__ = "manager_model_deployments"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    slug: Mapped[str] = mapped_column(String(120), nullable=False)
     label: Mapped[str] = mapped_column(String(160), nullable=False)
     provider_model: Mapped[str] = mapped_column(String(240), nullable=False)
     api: Mapped[str] = mapped_column(String(80), default="openai-completions")
@@ -61,6 +61,8 @@ class ModelDeployment(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    __table_args__ = (UniqueConstraint("slug", "revision"),)
+
 
 class RunnerPolicy(Base):
     __tablename__ = "manager_runner_policies"
@@ -71,6 +73,7 @@ class RunnerPolicy(Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(20), default="published")
     model_slugs_json: Mapped[str] = mapped_column(Text, nullable=False)
+    model_revisions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     default_model_slug: Mapped[str] = mapped_column(String(120), nullable=False)
     cpu: Mapped[str] = mapped_column(String(20), default="2")
     memory: Mapped[str] = mapped_column(String(20), default="4Gi")

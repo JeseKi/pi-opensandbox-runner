@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "coding-default",
+      "label": "Coding Default",
+      "provider_model": "deepseek/deepseek-v4-flash",
+      "api": "openai-completions",
+      "secret_ref": "DEEPSEEK_API_KEY",
+      "context_window": 264000,
+      "max_tokens": 16000,
+      "reasoning": true
+    }
+  ],
+  "policies": [
+    {
+      "slug": "consumer-default",
+      "label": "Consumer Default",
+      "model_slugs": ["coding-default"],
+      "default_model_slug": "coding-default",
+      "cpu": "2",
+      "memory": "4Gi",
+      "max_active_sessions": 4,
+      "max_budget": 5.0,
+      "budget_duration": "24h",
+      "rpm_limit": 30,
+      "tpm_limit": 1000000,
+      "max_parallel_requests": 2,
+      "egress_domains": [
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com",
+        "deb.debian.org",
+        "mirrors.tuna.tsinghua.edu.cn",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "pypi.tuna.tsinghua.edu.cn",
+        "registry.npmjs.org",
+        "registry.npmmirror.com"
+      ]
+    }
+  ]
+}

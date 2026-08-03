@@ -4,15 +4,16 @@ import hashlib
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from ..catalog_config import load_catalog, sync_catalog
 from ..crypto import CredentialCipher
 from ..models import (
     ManagerOperation,
-    ModelDeployment,
     RunnerInstance,
     RunnerPolicy,
 )
@@ -21,57 +22,8 @@ from ..schemas import InstanceEnsure
 
 
 def seed_catalog(db: Session) -> None:
-    model = db.scalar(select(ModelDeployment).where(ModelDeployment.slug == "coding-default"))
-    if model is None:
-        model = ModelDeployment(
-            id=str(uuid4()),
-            slug="coding-default",
-            label="Coding Default",
-            provider_model="deepseek/deepseek-v4-flash",
-            api="openai-completions",
-            secret_ref="DEEPSEEK_API_KEY",
-            context_window=264_000,
-            max_tokens=16_000,
-            reasoning=True,
-            state="published",
-            revision=1,
-        )
-        db.add(model)
-    policy = db.scalar(
-        select(RunnerPolicy).where(
-            RunnerPolicy.slug == "consumer-default",
-            RunnerPolicy.revision == 1,
-        )
-    )
-    if policy is None:
-        db.add(
-            RunnerPolicy(
-                id=str(uuid4()),
-                slug="consumer-default",
-                label="Consumer Default",
-                revision=1,
-                state="published",
-                model_slugs_json='["coding-default"]',
-                default_model_slug="coding-default",
-                cpu="2",
-                memory="4Gi",
-                max_active_sessions=4,
-                max_budget=5.0,
-                budget_duration="24h",
-                rpm_limit=30,
-                tpm_limit=1_000_000,
-                max_parallel_requests=2,
-                egress_domains_json=json.dumps(
-                    [
-                        "github.com",
-                        "api.github.com",
-                        "raw.githubusercontent.com",
-                        "registry.npmjs.org",
-                    ]
-                ),
-            )
-        )
-    db.flush()
+    """Compatibility helper for tests and direct local administration."""
+    sync_catalog(db, load_catalog(Path("config/runner-catalog.json")))
 
 
 def published_policy(db: Session, slug: str) -> RunnerPolicy:

@@ -12,6 +12,36 @@ from pi_opensandbox_runner.app import TrustedProxyAddresses, create_app
 from pi_opensandbox_runner.config import Settings
 
 
+def bridge_model_catalog(tmp_path: Path) -> Path:
+    path = tmp_path / "models.json"
+    path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "litellm": {
+                        "baseUrl": "http://litellm:4000/v1",
+                        "api": "openai-completions",
+                        "apiKey": "$LITELLM_VIRTUAL_KEY",
+                        "authHeader": True,
+                        "models": [
+                            {
+                                "id": "coding-default",
+                                "name": "Coding Default",
+                                "reasoning": True,
+                                "input": ["text"],
+                                "contextWindow": 264000,
+                                "maxTokens": 16000,
+                            }
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 @pytest.fixture
 async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
     fake_pi = Path(__file__).with_name("fake_pi.py")
@@ -21,7 +51,7 @@ async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
         workspace_root=tmp_path / "workspace",
         pi_executable=str(fake_pi),
         default_model="coding-default",
-        model_catalog_path=Path(__file__).parents[1] / "config" / "pi-models.json",
+        model_catalog_path=bridge_model_catalog(tmp_path),
         rpc_timeout_seconds=2,
         stop_grace_seconds=1,
     )
@@ -195,7 +225,7 @@ async def test_bridge_rejects_non_proxy_network_peer(tmp_path: Path) -> None:
         pi_session_dir=tmp_path / "pi-sessions",
         workspace_root=tmp_path / "workspace",
         pi_executable=str(fake_pi),
-        model_catalog_path=Path(__file__).parents[1] / "config" / "pi-models.json",
+        model_catalog_path=bridge_model_catalog(tmp_path),
         trusted_proxy_host="localhost",
     )
     app = create_app(settings)
@@ -253,7 +283,7 @@ async def test_bridge_terminal_rest_proxy(tmp_path: Path) -> None:
         pi_session_dir=tmp_path / "pi-sessions",
         workspace_root=tmp_path / "workspace",
         pi_executable=str(fake_pi),
-        model_catalog_path=Path(__file__).parents[1] / "config" / "pi-models.json",
+        model_catalog_path=bridge_model_catalog(tmp_path),
     )
     seen: list[tuple[str, str]] = []
 

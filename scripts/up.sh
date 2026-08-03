@@ -10,8 +10,7 @@ Usage: scripts/up.sh NAME [options]
 Options:
   --model NAME             LiteLLM model alias (default: coding-default)
   --mcp-env-file PATH      Optional MCP_* credentials injected into sandbox
-  --egress-profile NAME    Add a named outbound-domain profile (repeatable)
-  --egress-allowlist PATH  Add domains from a one-domain-per-line file
+  --policy SLUG            Runner catalog policy (default: consumer-default)
   --mirror-mode MODE       auto, cn, or global (default: auto)
   --show-token             Print the bridge bearer token (unsafe in CI logs)
   --cpu VALUE              CPU limit (default: 2)
@@ -34,8 +33,7 @@ validate_name "$NAME"
 
 MODEL="coding-default"
 MCP_ENV_FILE=""
-EGRESS_ALLOWLIST_FILE=""
-declare -a EGRESS_PROFILES=()
+POLICY="consumer-default"
 MIRROR_MODE_VALUE="${MIRROR_MODE:-auto}"
 SHOW_TOKEN=false
 CPU="2"
@@ -44,8 +42,7 @@ while (($#)); do
   case "$1" in
     --model) MODEL="$2"; shift 2 ;;
     --mcp-env-file) MCP_ENV_FILE="$2"; shift 2 ;;
-    --egress-profile) EGRESS_PROFILES+=("$2"); shift 2 ;;
-    --egress-allowlist) EGRESS_ALLOWLIST_FILE="$2"; shift 2 ;;
+    --policy) POLICY="$2"; shift 2 ;;
     --mirror-mode) MIRROR_MODE_VALUE="$2"; shift 2 ;;
     --show-token) SHOW_TOKEN=true; shift ;;
     --cpu) CPU="$2"; shift 2 ;;
@@ -65,9 +62,9 @@ if [[ -n "$MCP_ENV_FILE" && ! -f "$MCP_ENV_FILE" ]]; then
   echo "MCP environment file not found: $MCP_ENV_FILE" >&2
   exit 2
 fi
-if ! jq -e --arg model "$MODEL" \
-  '.providers.litellm.models[] | select(.id == $model)' \
-  "$PROJECT_DIR/config/pi-models.json" >/dev/null; then
+if ! jq -e --arg model "$MODEL" --arg policy "$POLICY" \
+  '.policies[] | select(.slug == $policy and (.model_slugs | index($model)))' \
+  "$PROJECT_DIR/config/runner-catalog.json" >/dev/null; then
   echo "Unknown LiteLLM model alias: $MODEL" >&2
   exit 2
 fi
@@ -84,10 +81,6 @@ wait_for_server
 wait_for_litellm
 
 STATE_FILE="$(state_file "$NAME")"
-HAS_EGRESS_INPUT=false
-if ((${#EGRESS_PROFILES[@]} > 0)) || [[ -n "$EGRESS_ALLOWLIST_FILE" ]]; then
-  HAS_EGRESS_INPUT=true
-fi
 if [[ -f "$STATE_FILE" ]]; then
   EXISTING_ID="$(jq -r '.sandbox_id // empty' "$STATE_FILE")"
   if [[ -n "$EXISTING_ID" ]] \
@@ -98,11 +91,15 @@ if [[ -f "$STATE_FILE" ]]; then
       exit 1
     fi
     if ! load_egress_policy_from_state "$STATE_FILE"; then
-      echo "Sandbox '$NAME' has unrestricted legacy egress; run scripts/down.sh $NAME, then recreate it with an egress profile or allowlist." >&2
+      echo "Sandbox '$NAME' has unrestricted legacy egress; run scripts/down.sh $NAME, then recreate it with a runner catalog policy." >&2
       exit 1
     fi
-    if [[ "$HAS_EGRESS_INPUT" == true ]]; then
-      echo "Sandbox '$NAME' is already running; use scripts/egress-policy.sh $NAME apply to change its egress policy." >&2
+    if [[ -z "$RESOLVED_EGRESS_POLICY_SLUG" ]]; then
+      echo "Sandbox '$NAME' predates runner-catalog egress state; run scripts/egress-policy.sh $NAME apply --policy $POLICY." >&2
+      exit 1
+    fi
+    if [[ "$RESOLVED_EGRESS_POLICY_SLUG" != "$POLICY" ]]; then
+      echo "Sandbox '$NAME' uses policy '$RESOLVED_EGRESS_POLICY_SLUG'; use scripts/egress-policy.sh $NAME apply --policy $POLICY to change it." >&2
       exit 1
     fi
     echo "Sandbox '$NAME' is already running."
@@ -126,14 +123,7 @@ if [[ -f "$STATE_FILE" ]]; then
   fi
 fi
 
-if [[ "$HAS_EGRESS_INPUT" == true ]]; then
-  resolve_egress_policy "$EGRESS_ALLOWLIST_FILE" "${EGRESS_PROFILES[@]}"
-elif [[ -f "$STATE_FILE" ]] && load_egress_policy_from_state "$STATE_FILE"; then
-  :
-else
-  echo "Choose at least one --egress-profile or provide --egress-allowlist for '$NAME'." >&2
-  exit 2
-fi
+resolve_egress_policy "$POLICY"
 
 # Rebuilding a shared Docker tag discards the image metadata that OpenSandbox
 # needs to inspect already-running sandboxes. Build only for first use; image
@@ -274,6 +264,18 @@ if ! curl --fail --silent "${BRIDGE_URL}/readyz" >/dev/null; then
   echo "Bridge did not become ready at ${BRIDGE_URL}." >&2
   exit 1
 fi
+
+# The Runner image contains a bootstrap copy of the catalog so Bridge can
+# start before this script has a reachable endpoint. Replace it now from the
+# host catalog so direct-script sandboxes observe the same source of truth as
+# Manager-provisioned sandboxes without requiring an image rebuild.
+BRIDGE_MODEL_CONFIG="$(bridge_model_config "$POLICY")"
+curl --fail-with-body --silent --show-error \
+  --request PUT \
+  --header "Authorization: Bearer ${BRIDGE_PROXY_TOKEN}" \
+  --header 'Content-Type: application/json' \
+  --data "$BRIDGE_MODEL_CONFIG" \
+  "${BRIDGE_URL}/v1/models/config" >/dev/null
 
 jq -n \
   --arg name "$NAME" \

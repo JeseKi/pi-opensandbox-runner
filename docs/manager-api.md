@@ -274,17 +274,17 @@ Turn 是共享文件系统的独立进程，可并发运行，但不会附着到
 协议、断线 replay、反向代理配置和可直接运行的 xterm.js 示例见
 [WebTerminal API](web-terminal.md)。
 
-## Admin API
+## Admin API（已弃用）
 
-管理员 token 只用于内部配置：
+模型和 Policy 由 `RUNNER_MANAGER_CATALOG_PATH` 指向的 JSON 文件管理。以下旧写接口保留路由，
+但均返回 `409 catalog_file_managed`；请原子替换配置文件并等待 Manager 热加载：
 
 ```http
 POST /admin/v1/models
 POST /admin/v1/policies
 ```
 
-Policy 更新会创建同 slug 的新 revision。不要把 admin token 配置到 `agent-runner`。
-创建 Model 只写入 Manager catalog，不会同步 LiteLLM 路由；发布前必须先配置并验证同名
-LiteLLM alias。
+不要把 admin token 配置到 `agent-runner`。配置文件的模型条目同样不会同步 LiteLLM 路由；
+发布前必须先配置并验证同名 LiteLLM alias。
 
 返回[文档索引](README.md)。

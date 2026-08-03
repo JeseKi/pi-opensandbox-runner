@@ -15,7 +15,8 @@ flowchart LR
 服务。Manager service token 代表一个 consumer；所有 Instance 查询都额外按 consumer ID
 隔离，即使 subject_ref 相同也不会互相可见。
 
-admin token 可以发布全局 Model 和 Policy，权限高于 service token，不能配置到业务系统。
+admin token 仅用于旧管理接口的兼容鉴权；模型和 Policy 的写来源是 Manager catalog 配置文件，
+不能配置到业务系统。
 
 ## 密钥归属
 
@@ -25,7 +26,7 @@ admin token 可以发布全局 Model 和 Policy，权限高于 service token，�
 | LiteLLM master key | Manager | virtual key 签发、校正和吊销 |
 | Manager credential encryption key | Manager 进程 |加密数据库中的实例凭据 |
 | Manager service token | 内部 consumer | 调用其作用域内的 Manager API |
-| Manager admin token | 内部平台管理员 | 发布 Model/Policy |
+| Manager admin token | 内部平台管理员 | 调用已弃用管理接口的兼容鉴权 |
 | Bridge proxy token | Manager 加密数据库、OpenSandbox proxy hash | 访问单个 sandbox Bridge |
 | LiteLLM virtual key | Manager 加密数据库、对应 sandbox | 受 Policy 限制的模型请求 |
 
@@ -55,14 +56,18 @@ Policy 使用 default-deny 网络规则，只允许：
 - 内部 `litellm` 和 `opensandbox`；
 - Policy 明确列出的公网域名。
 
+内置 `consumer-default` 还包含 Dockerfile 使用的依赖源：`deb.debian.org`、
+`mirrors.tuna.tsinghua.edu.cn`、`pypi.org`、`files.pythonhosted.org`、
+`pypi.tuna.tsinghua.edu.cn`、`registry.npmjs.org` 和 `registry.npmmirror.com`。
+这只适用于受信任的默认开发 sandbox；更严格的产品 Policy 应只列出实际需要的域名。
+
 OpenSandbox egress sidecar 持有 `NET_ADMIN`，sandbox 主容器不持有。项目对固定 OpenSandbox
 Docker backend 使用版本约束补丁，使 sidecar 加入内部网络并阻止绕过 FQDN 规则；上游源码不
 匹配时镜像构建会失败。
 
-egress 是 Policy 的一部分。C 端用户和浅层管理员不能直接追加任意域名；新增域名应发布新的
-Policy revision 并重新 provision Instance。当前 Admin API 尚未在发布阶段完整校验域名格式，
-错误值会在 OpenSandbox provision 时失败；内部管理工具应在提交前只允许 FQDN 或受支持的
-通配域名。
+egress 是 Policy 的一部分。C 端用户和浅层管理员不能直接追加任意域名；部署者只能通过
+`runner-catalog.json` 发布新的 Policy revision。配置加载会拒绝 URL、IP、端口、重复项和内部
+保留目标；错误配置不会替换最后一次有效 catalog。
 
 ## 文件权限
 

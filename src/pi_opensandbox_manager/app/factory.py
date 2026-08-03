@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Any, cast
@@ -10,6 +11,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from ..catalog_config import CatalogConfigError, load_catalog, sync_catalog
 from ..config import ManagerSettings
 from ..crypto import CredentialCipher
 from ..database import ManagerDatabase
@@ -17,7 +19,6 @@ from ..openapi_docs import APP_DESCRIPTION, OPENAPI_TAGS
 from ..problems import ManagerProblem, problem_response
 from ..security import Authenticator, ManagerBearerCredentials, Principal, bootstrap
 from ..service.long_tasks import OperationExecutor, SandboxRecoveryMonitor
-from ..service.short_transactions import seed_catalog
 from .admin_routes import register_admin_routes
 from .catalog_routes import register_catalog_routes
 from .command_routes import register_command_routes
@@ -34,6 +35,8 @@ from .terminal_routes import (
 from .turn_routes import register_turn_routes
 from .workspace_file_routes import register_workspace_file_routes
 from .workspace_routes import register_workspace_routes
+
+logger = logging.getLogger(__name__)
 
 
 def create_manager_app(
@@ -71,22 +74,49 @@ def create_manager_app(
                     stop_event.wait(), timeout=resolved.sandbox_healthcheck_seconds
                 )
 
+    async def catalog_reload_loop(app: FastAPI) -> None:
+        failed_hash: str | None = None
+        while not stop_event.is_set():
+            try:
+                snapshot = await asyncio.to_thread(load_catalog, resolved.catalog_path)
+                if snapshot.content_hash != app.state.catalog_hash:
+                    changed = await asyncio.to_thread(_sync_catalog, db_control, snapshot)
+                    app.state.catalog_hash = snapshot.content_hash
+                    app.state.catalog_error = None
+                    logger.info("runner catalog synchronized", extra={"changed": changed})
+                failed_hash = None
+            except CatalogConfigError as exc:
+                marker = str(exc)
+                app.state.catalog_error = marker
+                if marker != failed_hash:
+                    logger.error("runner catalog reload failed: %s", exc)
+                    failed_hash = marker
+            with suppress(TimeoutError):
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=max(0.1, resolved.catalog_reload_seconds)
+                )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # The initial catalog is mandatory. Do not start a Manager that cannot
+        # establish its policy and model source of truth.
+        snapshot = load_catalog(resolved.catalog_path)
         db_control.initialize()
         bootstrap(db_control, resolved)
-        with db_control.session() as db:
-            seed_catalog(db)
+        _sync_catalog(db_control, snapshot)
+        app.state.catalog_hash = snapshot.content_hash
+        app.state.catalog_error = None
         mark_connected_terminals_detached(db_control)
         app.state.worker_alive = True
         worker = asyncio.create_task(operation_loop())
         terminal_cleaner = asyncio.create_task(terminal_cleanup_loop())
         recovery_monitor_task = asyncio.create_task(sandbox_recovery_loop())
+        catalog_reloader = asyncio.create_task(catalog_reload_loop(app))
         try:
             yield
         finally:
             stop_event.set()
-            await asyncio.gather(worker, terminal_cleaner, recovery_monitor_task)
+            await asyncio.gather(worker, terminal_cleaner, recovery_monitor_task, catalog_reloader)
             app.state.worker_alive = False
             db_control.dispose()
 
@@ -102,6 +132,8 @@ def create_manager_app(
     )
     app.state.database = db_control
     app.state.worker_alive = False
+    app.state.catalog_hash = None
+    app.state.catalog_error = None
 
     @app.middleware("http")
     async def request_id(request: Request, call_next: Any) -> Response:
@@ -177,3 +209,8 @@ def create_manager_app(
     )
     register_admin_routes(app, db_control, admin_principal)
     return app
+
+
+def _sync_catalog(database: ManagerDatabase, snapshot: Any) -> bool:
+    with database.session() as db:
+        return sync_catalog(db, snapshot)
