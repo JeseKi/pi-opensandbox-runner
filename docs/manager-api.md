@@ -213,6 +213,23 @@ GET|DELETE     /v1/instances/{subject_ref}/sessions/{session_id}/commands/{comma
 
 路径前缀不是强安全边界，不能把 workspace/command API 直接暴露给不可信调用方。
 
+## 容器文件系统
+
+用于已完成最终用户授权的可信 consumer，可直接访问 ready Instance 中的任意绝对容器路径：
+
+```http
+GET    /v1/instances/{subject_ref}/filesystem?path=/&depth=1
+GET    /v1/instances/{subject_ref}/filesystem/content?path=/etc/hosts
+PUT    /v1/instances/{subject_ref}/filesystem/content?path=/etc/example.conf
+DELETE /v1/instances/{subject_ref}/filesystem/content?path=/etc/example.conf
+POST   /v1/instances/{subject_ref}/filesystem/upload
+```
+
+这些接口需要 `filesystem:access` scope。读取可透传 Range 或 offset/limit；完整读取返回强
+ETag。文本更新和删除必须携带该 ETag；上传使用 multipart/form-data（`path`、`file`）并必须
+携带 `If-None-Match: *`，因此不会覆盖已有文件。路径必须为绝对路径；不支持建目录、递归删除
+或覆盖上传。该能力可读取运行时敏感文件，Manager 不应直接暴露到公网。
+
 ## WebTerminal
 
 Manager 可以为 ready Instance 创建独立 PTY，并向已经完成最终用户授权的外部后端签发

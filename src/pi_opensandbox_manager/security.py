@@ -93,6 +93,7 @@ def bootstrap(database: ManagerDatabase, settings: ManagerSettings) -> None:
                     "sessions:write",
                     "workspace:read",
                     "workspace:write",
+                    "filesystem:access",
                     "commands:execute",
                     "terminals:access",
                 ],

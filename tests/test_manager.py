@@ -75,6 +75,7 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
         assert openapi.status_code == 200
         schema = openapi.json()
         assert "/v1/instances/{subject_ref}" in schema["paths"]
+        assert "/v1/instances/{subject_ref}/filesystem" in schema["paths"]
         bearer_scheme = schema["components"]["securitySchemes"]["HTTPBearer"]
         assert bearer_scheme["type"] == "http"
         assert bearer_scheme["scheme"] == "bearer"
@@ -670,3 +671,81 @@ def test_manager_terminal_lifecycle_and_one_time_ticket(
             assert stored_terminal is not None
             assert stored_terminal.state == "closed"
         assert deleted == ["execd-terminal"]
+
+
+def test_manager_filesystem_proxies_full_container_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    bootstrap(database, configured)
+    cipher = CredentialCipher(configured.credential_encryption_key)
+    with database.session() as db:
+        seed_catalog(db)
+        consumer = db.query(Consumer).filter_by(slug="agent-runner").one()
+        policy = db.query(RunnerPolicy).filter_by(slug="consumer-default").one()
+        db.add(
+            RunnerInstance(
+                id="filesystem-instance",
+                consumer_id=consumer.id,
+                subject_ref="filesystem-user",
+                policy_id=policy.id,
+                state="ready",
+                phase="ready",
+                bridge_url="http://opensandbox:8080/proxy/bridge",
+                bridge_token_encrypted=cipher.encrypt("bridge-token"),
+                pi_volume_name="pi-filesystem",
+                workspace_volume_name="workspace-filesystem",
+                litellm_key_alias="key-filesystem",
+            )
+        )
+
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def passthrough(_self, method: str, path: str, **kwargs: object) -> httpx.Response:
+        calls.append((method, path, kwargs))
+        if method == "GET" and path == "/files":
+            return httpx.Response(200, json={"path": "/etc", "items": [], "truncated": False})
+        return httpx.Response(204, headers={"ETag": '"new-version"'})
+
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.clients.BridgeClient.passthrough", passthrough
+    )
+    app = create_manager_app(configured, database)
+    headers = {"Authorization": "Bearer rm_svc_test"}
+    with TestClient(app) as client:
+        listed = client.get(
+            "/v1/instances/filesystem-user/filesystem",
+            headers=headers,
+            params={"path": "/etc", "depth": 2},
+        )
+        assert listed.status_code == 200
+        assert listed.json()["path"] == "/etc"
+
+        updated = client.put(
+            "/v1/instances/filesystem-user/filesystem/content",
+            headers={
+                **headers,
+                "Content-Type": "text/plain; charset=utf-8",
+                "If-Match": '"previous-version"',
+            },
+            params={"path": "/etc/example.conf"},
+            content="next",
+        )
+        assert updated.status_code == 204
+        assert updated.headers["etag"] == '"new-version"'
+
+        invalid = client.get(
+            "/v1/instances/filesystem-user/filesystem",
+            headers=headers,
+            params={"path": "relative"},
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["code"] == "invalid_container_path"
+
+    assert calls[0] == ("GET", "/files", {"params": {"path": "/etc", "depth": 2}})
+    assert calls[1][0:2] == ("PUT", "/files/content")
+    assert calls[1][2]["params"] == {"path": "/etc/example.conf"}
+    assert calls[1][2]["content"] == b"next"

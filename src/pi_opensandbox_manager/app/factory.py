@@ -22,6 +22,7 @@ from .admin_routes import register_admin_routes
 from .catalog_routes import register_catalog_routes
 from .command_routes import register_command_routes
 from .event_routes import register_event_routes
+from .filesystem_routes import register_filesystem_routes
 from .instance_list_routes import register_instance_list_routes
 from .instance_routes import register_instance_routes
 from .session_routes import register_session_routes
@@ -158,6 +159,7 @@ def create_manager_app(
         app, db_control, resolved, cipher, service_principal, refresh_session
     )
     register_event_routes(app, db_control, resolved, cipher, service_principal)
+    register_filesystem_routes(app, db_control, resolved, cipher, service_principal)
     register_workspace_routes(app, db_control, resolved, cipher, service_principal)
     register_command_routes(app, db_control, resolved, cipher, service_principal)
     register_terminal_routes(

@@ -54,6 +54,10 @@ OPENAPI_TAGS = [
         "description": "预览能力：代理访问 Session 工作目录中的文件和目录。",
     },
     {
+        "name": "Filesystem（容器文件系统）",
+        "description": "高危能力：访问用户 Runner 容器中的任意绝对文件路径。",
+    },
+    {
         "name": "Command（后台命令）",
         "description": "预览能力：在 Session 工作目录中执行、查询和中止后台命令。",
     },
