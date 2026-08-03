@@ -28,6 +28,7 @@ from .problems import ApiProblem, problem_response
 from .session_routes import register_session_routes
 from .session_runtime_routes import register_session_runtime_routes
 from .terminal_routes import register_terminal_routes
+from .workspace_file_routes import register_workspace_file_routes
 
 EXTERNAL_BEARER_AUTH = HTTPBearer(auto_error=False)
 ExternalBearerCredentials = Annotated[
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             {"name": "MCP", "description": "远程 MCP Server 注册表与 Session 绑定。"},
             {"name": "Models", "description": "Pi LiteLLM 模型目录管理。"},
             {"name": "Files", "description": "通过 OpenSandbox Execd 浏览和修改容器文件。"},
+            {"name": "Workspace Files", "description": "受限于 /root/workspace 的用户文件管理。"},
             {"name": "Commands", "description": "通过 OpenSandbox Execd 执行和管理命令。"},
             {"name": "Terminals", "description": "通过 OpenSandbox Execd 访问交互式 PTY。"},
         ],
@@ -203,6 +205,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     mcp_router = APIRouter(tags=["MCP"])
     model_router = APIRouter(tags=["Models"])
     file_router = APIRouter(tags=["Files"])
+    workspace_file_router = APIRouter(tags=["Workspace Files"])
     command_router = APIRouter(tags=["Commands"])
     terminal_router = APIRouter(tags=["Terminals"])
     terminal_websocket_router = APIRouter(prefix="/v1")
@@ -211,6 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_mcp_routes(mcp_router, ctx)
     register_model_routes(model_router, ctx)
     register_file_routes(file_router, ctx)
+    register_workspace_file_routes(workspace_file_router, ctx)
     register_command_routes(command_router, ctx)
     register_terminal_routes(
         terminal_router,
@@ -223,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     router.include_router(mcp_router)
     router.include_router(model_router)
     router.include_router(file_router)
+    router.include_router(workspace_file_router)
     router.include_router(command_router)
     router.include_router(terminal_router)
     app.include_router(router)

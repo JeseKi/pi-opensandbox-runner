@@ -102,6 +102,77 @@ async def test_auth_and_session_lifecycle(client: AsyncClient, tmp_path: Path) -
     assert (await client.get(f"/v1/sessions/{session_id}")).status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_workspace_files_are_relative_etag_protected_and_symlink_safe(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    readme = workspace / "README.md"
+    readme.write_text("# hello\n", encoding="utf-8")
+
+    listed = await client.get("/v1/workspace-files")
+    assert listed.status_code == 200
+    item = listed.json()["items"][0]
+    assert item["name"] == "README.md"
+    assert item["type"] == "file"
+    assert item["size"] == 8
+    assert item["modified_at"].endswith("+00:00")
+
+    fetched = await client.get("/v1/workspace-files/content", params={"path": "README.md"})
+    assert fetched.status_code == 200
+    assert fetched.content == b"# hello\n"
+    assert fetched.headers["content-disposition"] == "attachment; filename*=UTF-8''README.md"
+    assert fetched.headers["x-file-size"] == "8"
+    etag = fetched.headers["etag"]
+
+    updated = await client.put(
+        "/v1/workspace-files/content",
+        params={"path": "README.md"},
+        content=b"# updated\n",
+        headers={"Content-Type": "text/plain; charset=utf-8", "If-Match": etag},
+    )
+    assert updated.status_code == 204
+    assert updated.headers["etag"] != etag
+    conflict = await client.put(
+        "/v1/workspace-files/content",
+        params={"path": "README.md"},
+        content=b"# stale\n",
+        headers={"Content-Type": "text/plain", "If-Match": etag},
+    )
+    assert conflict.status_code == 412
+
+    uploaded = await client.post(
+        "/v1/workspace-files/upload",
+        data={"path": "notes.txt"},
+        files={"file": ("notes.txt", b"notes", "text/plain")},
+        headers={"If-None-Match": "*"},
+    )
+    assert uploaded.status_code == 201
+    duplicate = await client.post(
+        "/v1/workspace-files/upload",
+        data={"path": "notes.txt"},
+        files={"file": ("notes.txt", b"duplicate", "text/plain")},
+        headers={"If-None-Match": "*"},
+    )
+    assert duplicate.status_code == 412
+    deleted = await client.delete(
+        "/v1/workspace-files/content",
+        params={"path": "notes.txt"},
+        headers={"If-Match": uploaded.headers["etag"]},
+    )
+    assert deleted.status_code == 204
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    (workspace / "escape").symlink_to(outside)
+    assert (
+        await client.get("/v1/workspace-files/content", params={"path": "/etc/passwd"})
+    ).status_code == 422
+    assert (
+        await client.get("/v1/workspace-files/content", params={"path": "escape"})
+    ).status_code == 422
+
+
 def test_trusted_proxy_addresses_resolves_only_the_configured_controller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

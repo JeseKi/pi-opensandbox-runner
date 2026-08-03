@@ -37,6 +37,7 @@ OpenSandbox、LiteLLM 或模型供应商此刻可用，依赖故障会记录到 
 Instance 生命周期通过异步 Operation 驱动：
 
 - `provision`：签发 LiteLLM key、恢复/创建 sandbox、等待 Bridge、下发 model catalog。
+- `recovery`：由后台巡检触发，删除失效 sandbox 后以原有持久卷、凭据和 Policy 重建；最多尝试 3 次。
 - `stop`：删除 sandbox、吊销 key，保留 Manager 记录和命名卷。
 - `destroy`：当前同样删除 sandbox、吊销 key并标记 destroyed，但仍保留命名卷。
 
@@ -53,6 +54,10 @@ uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" stop user-1
 Operation 的 `phase` 比笼统的状态更适合排障，例如 `issuing_model_key`、
 `creating_sandbox`、`waiting_sandbox`、`checking_bridge`、`applying_catalog`。失败时先查看
 `problem.code`、`problem.detail` 和 `problem.retryable`。
+
+Manager 在启动时立即、随后每 `RUNNER_MANAGER_SANDBOX_HEALTHCHECK_SECONDS`（默认 60）秒检查
+`ready` Instance。只有 OpenSandbox 明确返回 404 或非 `running`/`ready` 状态才自动恢复；网络错误、
+超时和 5xx 不会误触发重建。三次恢复之间分别等待 5 秒、15 秒，最后一次失败后状态为 `failed`。
 
 ## Model 与 Policy
 

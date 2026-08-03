@@ -16,7 +16,7 @@ from ..database import ManagerDatabase
 from ..openapi_docs import APP_DESCRIPTION, OPENAPI_TAGS
 from ..problems import ManagerProblem, problem_response
 from ..security import Authenticator, ManagerBearerCredentials, Principal, bootstrap
-from ..service.long_tasks import OperationExecutor
+from ..service.long_tasks import OperationExecutor, SandboxRecoveryMonitor
 from ..service.short_transactions import seed_catalog
 from .admin_routes import register_admin_routes
 from .catalog_routes import register_catalog_routes
@@ -32,6 +32,7 @@ from .terminal_routes import (
     register_terminal_routes,
 )
 from .turn_routes import register_turn_routes
+from .workspace_file_routes import register_workspace_file_routes
 from .workspace_routes import register_workspace_routes
 
 
@@ -44,6 +45,7 @@ def create_manager_app(
     authenticator = Authenticator(db_control)
     cipher = CredentialCipher(resolved.credential_encryption_key)
     executor = OperationExecutor(db_control, resolved)
+    recovery_monitor = SandboxRecoveryMonitor(db_control, resolved)
     stop_event = asyncio.Event()
 
     async def operation_loop() -> None:
@@ -59,8 +61,14 @@ def create_manager_app(
         while not stop_event.is_set():
             await cleanup_terminals(db_control, resolved, cipher)
             with suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=resolved.terminal_cleanup_seconds)
+
+    async def sandbox_recovery_loop() -> None:
+        while not stop_event.is_set():
+            await asyncio.to_thread(recovery_monitor.check_once)
+            with suppress(TimeoutError):
                 await asyncio.wait_for(
-                    stop_event.wait(), timeout=resolved.terminal_cleanup_seconds
+                    stop_event.wait(), timeout=resolved.sandbox_healthcheck_seconds
                 )
 
     @asynccontextmanager
@@ -73,11 +81,12 @@ def create_manager_app(
         app.state.worker_alive = True
         worker = asyncio.create_task(operation_loop())
         terminal_cleaner = asyncio.create_task(terminal_cleanup_loop())
+        recovery_monitor_task = asyncio.create_task(sandbox_recovery_loop())
         try:
             yield
         finally:
             stop_event.set()
-            await asyncio.gather(worker, terminal_cleaner)
+            await asyncio.gather(worker, terminal_cleaner, recovery_monitor_task)
             app.state.worker_alive = False
             db_control.dispose()
 
@@ -152,15 +161,12 @@ def create_manager_app(
     register_catalog_routes(app, db_control, service_principal)
     register_instance_list_routes(app, db_control, service_principal)
     register_instance_routes(app, db_control, cipher, service_principal)
-    refresh_session = register_session_routes(
-        app, db_control, resolved, cipher, service_principal
-    )
-    register_turn_routes(
-        app, db_control, resolved, cipher, service_principal, refresh_session
-    )
+    refresh_session = register_session_routes(app, db_control, resolved, cipher, service_principal)
+    register_turn_routes(app, db_control, resolved, cipher, service_principal, refresh_session)
     register_event_routes(app, db_control, resolved, cipher, service_principal)
     register_filesystem_routes(app, db_control, resolved, cipher, service_principal)
     register_workspace_routes(app, db_control, resolved, cipher, service_principal)
+    register_workspace_file_routes(app, db_control, resolved, cipher, service_principal)
     register_command_routes(app, db_control, resolved, cipher, service_principal)
     register_terminal_routes(
         app,

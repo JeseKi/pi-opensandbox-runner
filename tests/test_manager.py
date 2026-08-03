@@ -14,7 +14,7 @@ from pi_opensandbox_manager.app.terminal_routes import (
     TERMINAL_TICKET_PREFIX,
     _consume_ticket,
 )
-from pi_opensandbox_manager.clients import OpenSandboxClient
+from pi_opensandbox_manager.clients import OpenSandboxClient, UpstreamProblem
 from pi_opensandbox_manager.config import ManagerSettings
 from pi_opensandbox_manager.crypto import CredentialCipher
 from pi_opensandbox_manager.database import ManagerDatabase
@@ -30,6 +30,10 @@ from pi_opensandbox_manager.models import (
 )
 from pi_opensandbox_manager.schemas import InstanceEnsure
 from pi_opensandbox_manager.security import bootstrap
+from pi_opensandbox_manager.service.long_tasks import (
+    OperationExecutor,
+    SandboxRecoveryMonitor,
+)
 from pi_opensandbox_manager.service.short_transactions import (
     ensure_instance,
     seed_catalog,
@@ -80,9 +84,7 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
         assert bearer_scheme["type"] == "http"
         assert bearer_scheme["scheme"] == "bearer"
         assert "service token" in bearer_scheme["description"]
-        assert schema["paths"]["/v1/catalog/models"]["get"]["security"] == [
-            {"HTTPBearer": []}
-        ]
+        assert schema["paths"]["/v1/catalog/models"]["get"]["security"] == [{"HTTPBearer": []}]
         assert not any(
             parameter["name"].lower() == "authorization"
             for parameter in schema["paths"]["/v1/catalog/models"]["get"].get("parameters", [])
@@ -248,9 +250,7 @@ def test_list_instances_is_paginated_filtered_and_consumer_scoped(tmp_path: Path
             "/v1/instances?policy_slug=consumer-default&q=Er-2",
             headers=headers,
         )
-        assert [item["subject_ref"] for item in policy_filtered.json()["items"]] == [
-            "user-2"
-        ]
+        assert [item["subject_ref"] for item in policy_filtered.json()["items"]] == ["user-2"]
 
         literal_wildcard = client.get("/v1/instances?q=%25_", headers=headers)
         assert literal_wildcard.status_code == 200
@@ -453,6 +453,185 @@ def test_ready_instance_does_not_enqueue_another_provision(tmp_path: Path) -> No
     database.dispose()
 
 
+def test_sandbox_recovery_monitor_queues_one_recovery_for_inactive_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    bootstrap(database, configured)
+    with database.session() as db:
+        seed_catalog(db)
+        consumer = db.query(Consumer).filter_by(slug="agent-runner").one()
+        policy = db.query(RunnerPolicy).filter_by(slug="consumer-default").one()
+        db.add(
+            RunnerInstance(
+                id="inactive-instance",
+                consumer_id=consumer.id,
+                subject_ref="inactive-user",
+                policy_id=policy.id,
+                state="ready",
+                phase="ready",
+                sandbox_id="sandbox-old",
+                bridge_url="http://bridge-old",
+                pi_volume_name="pi-inactive",
+                workspace_volume_name="workspace-inactive",
+                litellm_key_alias="key-inactive",
+            )
+        )
+
+    class FakeOpenSandbox:
+        def __init__(self, _settings: ManagerSettings):
+            pass
+
+        def get(self, sandbox_id: str) -> dict[str, object]:
+            assert sandbox_id == "sandbox-old"
+            return {"status": {"state": "terminated"}}
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.service.long_tasks.OpenSandboxClient", FakeOpenSandbox
+    )
+    monitor = SandboxRecoveryMonitor(database, configured)
+    assert monitor.check_once() == 1
+    assert monitor.check_once() == 0
+
+    with database.session() as db:
+        instance = db.get(RunnerInstance, "inactive-instance")
+        operation = db.query(ManagerOperation).one()
+        assert instance is not None
+        assert instance.state == "provisioning"
+        assert instance.phase == "recovery_queued"
+        assert instance.bridge_url is None
+        assert operation.kind == "recovery"
+        assert operation.status == "pending"
+    database.dispose()
+
+
+def test_sandbox_recovery_monitor_ignores_opensandbox_query_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    bootstrap(database, configured)
+    with database.session() as db:
+        seed_catalog(db)
+        consumer = db.query(Consumer).filter_by(slug="agent-runner").one()
+        policy = db.query(RunnerPolicy).filter_by(slug="consumer-default").one()
+        db.add(
+            RunnerInstance(
+                id="unreachable-instance",
+                consumer_id=consumer.id,
+                subject_ref="unreachable-user",
+                policy_id=policy.id,
+                state="ready",
+                phase="ready",
+                sandbox_id="sandbox-unreachable",
+                pi_volume_name="pi-unreachable",
+                workspace_volume_name="workspace-unreachable",
+                litellm_key_alias="key-unreachable",
+            )
+        )
+
+    class FakeOpenSandbox:
+        def __init__(self, _settings: ManagerSettings):
+            pass
+
+        def get(self, _sandbox_id: str) -> dict[str, object]:
+            raise UpstreamProblem(503, "opensandbox_unavailable", "unavailable")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.service.long_tasks.OpenSandboxClient", FakeOpenSandbox
+    )
+    assert SandboxRecoveryMonitor(database, configured).check_once() == 0
+    with database.session() as db:
+        instance = db.get(RunnerInstance, "unreachable-instance")
+        assert instance is not None
+        assert instance.state == "ready"
+        assert db.query(ManagerOperation).count() == 0
+    database.dispose()
+
+
+def test_recovery_retries_three_times_with_backoff_and_then_fails(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    bootstrap(database, configured)
+    with database.session() as db:
+        seed_catalog(db)
+        consumer = db.query(Consumer).filter_by(slug="agent-runner").one()
+        policy = db.query(RunnerPolicy).filter_by(slug="consumer-default").one()
+        db.add(
+            RunnerInstance(
+                id="recovery-instance",
+                consumer_id=consumer.id,
+                subject_ref="recovery-user",
+                policy_id=policy.id,
+                state="provisioning",
+                phase="recovery_queued",
+                pi_volume_name="pi-recovery",
+                workspace_volume_name="workspace-recovery",
+                litellm_key_alias="key-recovery",
+            )
+        )
+        db.flush()
+        db.add(
+            ManagerOperation(
+                id="recovery-operation",
+                consumer_id=consumer.id,
+                instance_id="recovery-instance",
+                kind="recovery",
+                status="running",
+                phase="starting",
+                attempt=1,
+            )
+        )
+
+    executor = OperationExecutor(database, configured)
+    executor._fail(
+        "recovery-operation", status=502, code="sandbox_failed", detail="failed", retryable=False
+    )
+    with database.session() as db:
+        operation = db.get(ManagerOperation, "recovery-operation")
+        assert operation is not None
+        first_retry_at = operation.next_attempt_at
+        assert operation.status == "pending"
+        assert operation.attempt == 1
+        assert first_retry_at is not None
+        assert 4 <= (first_retry_at.replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds() <= 6
+        operation.status = "running"
+        operation.attempt += 1
+    executor._fail(
+        "recovery-operation", status=502, code="sandbox_failed", detail="failed", retryable=False
+    )
+    with database.session() as db:
+        operation = db.get(ManagerOperation, "recovery-operation")
+        assert operation is not None
+        second_retry_at = operation.next_attempt_at
+        assert second_retry_at is not None
+        assert 14 <= (second_retry_at.replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds() <= 16
+        operation.status = "running"
+        operation.attempt += 1
+    executor._fail(
+        "recovery-operation", status=502, code="sandbox_failed", detail="failed", retryable=False
+    )
+    with database.session() as db:
+        instance = db.get(RunnerInstance, "recovery-instance")
+        operation = db.get(ManagerOperation, "recovery-operation")
+        assert operation is not None and instance is not None
+        assert operation.status == "failed"
+        assert operation.attempt == 3
+        assert instance.state == "failed"
+        assert instance.problem_json is not None
+    database.dispose()
+
+
 def test_bootstrap_merges_new_service_token_scopes(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     database = ManagerDatabase(configured)
@@ -642,24 +821,33 @@ def test_manager_terminal_lifecycle_and_one_time_ticket(
             stored_ticket = db.query(TerminalTicket).one()
             assert stored_ticket.token_hash != ticket
 
-        assert _consume_ticket(
-            database,
-            cipher,
-            ticket,
-            "https://evil.example",
-        ) is None
-        assert _consume_ticket(
-            database,
-            cipher,
-            ticket,
-            "http://127.0.0.1:8000",
-        ) is not None
-        assert _consume_ticket(
-            database,
-            cipher,
-            ticket,
-            "http://127.0.0.1:8000",
-        ) is None
+        assert (
+            _consume_ticket(
+                database,
+                cipher,
+                ticket,
+                "https://evil.example",
+            )
+            is None
+        )
+        assert (
+            _consume_ticket(
+                database,
+                cipher,
+                ticket,
+                "http://127.0.0.1:8000",
+            )
+            is not None
+        )
+        assert (
+            _consume_ticket(
+                database,
+                cipher,
+                ticket,
+                "http://127.0.0.1:8000",
+            )
+            is None
+        )
 
         removed = client.delete(
             f"/v1/instances/terminal-user/terminals/{terminal['id']}",
@@ -708,11 +896,11 @@ def test_manager_filesystem_proxies_full_container_paths(
         calls.append((method, path, kwargs))
         if method == "GET" and path == "/files":
             return httpx.Response(200, json={"path": "/etc", "items": [], "truncated": False})
+        if method == "GET" and path == "/workspace-files":
+            return httpx.Response(200, json={"path": "", "items": []})
         return httpx.Response(204, headers={"ETag": '"new-version"'})
 
-    monkeypatch.setattr(
-        "pi_opensandbox_manager.clients.BridgeClient.passthrough", passthrough
-    )
+    monkeypatch.setattr("pi_opensandbox_manager.clients.BridgeClient.passthrough", passthrough)
     app = create_manager_app(configured, database)
     headers = {"Authorization": "Bearer rm_svc_test"}
     with TestClient(app) as client:
@@ -745,7 +933,36 @@ def test_manager_filesystem_proxies_full_container_paths(
         assert invalid.status_code == 422
         assert invalid.json()["code"] == "invalid_container_path"
 
+        workspace_listed = client.get(
+            "/v1/instances/filesystem-user/workspace-files",
+            headers=headers,
+            params={"path": "", "depth": 1},
+        )
+        assert workspace_listed.status_code == 200
+        assert workspace_listed.json() == {"path": "", "items": []}
+        workspace_updated = client.put(
+            "/v1/instances/filesystem-user/workspace-files/content",
+            headers={
+                **headers,
+                "Content-Type": "text/plain; charset=utf-8",
+                "If-Match": '"previous-version"',
+            },
+            params={"path": "README.md"},
+            content="next",
+        )
+        assert workspace_updated.status_code == 204
+        workspace_invalid = client.get(
+            "/v1/instances/filesystem-user/workspace-files",
+            headers=headers,
+            params={"path": "/etc"},
+        )
+        assert workspace_invalid.status_code == 422
+        assert workspace_invalid.json()["code"] == "invalid_workspace_path"
+
     assert calls[0] == ("GET", "/files", {"params": {"path": "/etc", "depth": 2}})
     assert calls[1][0:2] == ("PUT", "/files/content")
     assert calls[1][2]["params"] == {"path": "/etc/example.conf"}
     assert calls[1][2]["content"] == b"next"
+    assert calls[2] == ("GET", "/workspace-files", {"params": {"path": "", "depth": 1}})
+    assert calls[3][0:2] == ("PUT", "/workspace-files/content")
+    assert calls[3][2]["params"] == {"path": "README.md"}

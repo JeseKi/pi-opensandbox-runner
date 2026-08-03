@@ -98,8 +98,11 @@ Manager 当前为每个 subject 维护一个持久 sandbox，以及独立的 Pi 
 5. 将 Manager model catalog 应用到 Bridge；
 6. 原子地把 Operation 和 Instance 标记为 ready。
 
-已经 ready 且 Policy 未变化时，ensure 是幂等的，不会重复轮换 key 或重建 sandbox。失败操作会
-保存结构化 problem；可重试错误按 operation attempt 重试。
+已经 ready 且 Policy 未变化时，ensure 是幂等的，不会重复轮换 key 或重建 sandbox。Manager 启动时
+会立即、之后每 60 秒巡检 ready Instance：OpenSandbox 明确返回 404 或非 `running`/`ready` 状态时，
+会创建内部 `recovery` Operation，删除残留 sandbox 并按原 Policy、凭据和持久卷重建。恢复最多尝试
+3 次，失败间隔为 5 秒、15 秒；第三次失败后 Instance 与 Operation 标记为 `failed` 并保存结构化
+problem。OpenSandbox 查询超时或 5xx 不会触发重建，留待下一轮巡检。
 
 ## Session 与 Turn
 

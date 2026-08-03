@@ -116,6 +116,18 @@ Bridge 默认最多保留 4 个 Pi 进程，空闲 5 分钟后回收；历史 Se
 这些接口同样使用 Bridge proxy Bearer token，内部经由 OpenSandbox Execd 调用，不会公开
 Execd 端口。路径不受 workspace 限制，可访问容器内任意 Pi 进程有权访问的路径。
 
+对于面向普通用户的文件页，使用受限的 `/v1/workspace-files` 系列接口。其路径相对
+`/root/workspace`，Bridge 拒绝符号链接、绝对路径和父目录跳转：
+
+```bash
+curl -sS "${BRIDGE_URL}/v1/workspace-files?path=&depth=1" -H "$AUTH" | jq
+curl -sS "${BRIDGE_URL}/v1/workspace-files/content?path=README.md" -H "$AUTH"
+```
+
+读取会给出 `Content-Type`、`Content-Disposition`、`ETag`、`X-File-Size` 和
+`X-File-Modified-At`。`Content-Disposition: attachment` 是下载建议，前端使用 fetch 读取时
+仍可根据 UTF-8、无 NUL、≤1 MiB 的内容决定是否打开编辑器。
+
 ```bash
 # 类似 ls：默认只返回直接子项；提高 depth 可递归浏览
 curl -sS "${BRIDGE_URL}/v1/files?path=/root/workspace&depth=1" -H "$AUTH" | jq

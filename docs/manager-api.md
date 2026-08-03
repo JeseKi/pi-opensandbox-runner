@@ -213,6 +213,24 @@ GET|DELETE     /v1/instances/{subject_ref}/sessions/{session_id}/commands/{comma
 
 路径前缀不是强安全边界，不能把 workspace/command API 直接暴露给不可信调用方。
 
+## 受限 Instance 工作区文件
+
+面向产品文件页的受限接口固定在 Instance 的 `/root/workspace` 下，客户端路径必须为相对路径：
+
+```http
+GET    /v1/instances/{subject_ref}/workspace-files?path=&depth=1
+GET    /v1/instances/{subject_ref}/workspace-files/content?path=README.md
+PUT    /v1/instances/{subject_ref}/workspace-files/content?path=README.md
+DELETE /v1/instances/{subject_ref}/workspace-files/content?path=README.md
+POST   /v1/instances/{subject_ref}/workspace-files/upload
+```
+
+读取需要 `workspace:read`，写入、上传和删除需要 `workspace:write`。Bridge 会拒绝绝对路径、
+`.`/`..`、NUL 和所有符号链接路径，确保操作不能逃出 workspace。完整读取返回 `ETag`、
+`X-File-Size`、`X-File-Modified-At`、`Content-Type` 与 `Content-Disposition`；调用方应把 MIME
+和 disposition 当作元信息，而非编辑权限判断。文本保存仍要求 UTF-8、无 NUL、最多 1 MiB 和
+`If-Match`；上传必须带 `If-None-Match: *`。
+
 ## 容器文件系统
 
 用于已完成最终用户授权的可信 consumer，可直接访问 ready Instance 中的任意绝对容器路径：

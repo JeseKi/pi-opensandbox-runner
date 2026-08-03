@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import desc, select
@@ -142,7 +142,7 @@ def ensure_instance(
     active = db.scalar(
         select(ManagerOperation).where(
             ManagerOperation.instance_id == instance.id,
-            ManagerOperation.kind == "provision",
+            ManagerOperation.kind.in_(("provision", "recovery")),
             ManagerOperation.status.in_(["pending", "running"]),
         )
     )
@@ -166,10 +166,11 @@ def enqueue_instance_operation(
     instance: RunnerInstance,
     kind: str,
 ) -> ManagerOperation:
+    active_kinds = ("provision", "recovery") if kind in {"provision", "recovery"} else (kind,)
     active = db.scalar(
         select(ManagerOperation).where(
             ManagerOperation.instance_id == instance.id,
-            ManagerOperation.kind == kind,
+            ManagerOperation.kind.in_(active_kinds),
             ManagerOperation.status.in_(["pending", "running"]),
         )
     )
@@ -193,22 +194,54 @@ def enqueue_instance_operation(
     return operation
 
 
+def enqueue_sandbox_recovery(db: Session, *, instance_id: str) -> ManagerOperation | None:
+    """Queue one recovery only if this is still an idle, ready instance."""
+    instance = db.get(RunnerInstance, instance_id)
+    if instance is None or instance.state != "ready":
+        return None
+    active = db.scalar(
+        select(ManagerOperation).where(
+            ManagerOperation.instance_id == instance.id,
+            ManagerOperation.kind.in_(("provision", "recovery", "stop", "destroy")),
+            ManagerOperation.status.in_(("pending", "running")),
+        )
+    )
+    if active is not None:
+        return None
+    operation = ManagerOperation(
+        id=str(uuid4()),
+        consumer_id=instance.consumer_id,
+        instance_id=instance.id,
+        kind="recovery",
+        status="pending",
+        phase="recovery_queued",
+    )
+    db.add(operation)
+    instance.state = "provisioning"
+    instance.phase = "recovery_queued"
+    instance.problem_json = None
+    instance.bridge_url = None
+    return operation
+
+
 def mark_operation_failed(
     db: Session,
     operation_id: str,
     problem: dict[str, object],
     *,
     retry: bool,
+    max_attempts: int = 8,
+    retry_delay_seconds: float = 0,
 ) -> None:
     operation = db.get(ManagerOperation, operation_id)
     if operation is None:
         return
     operation.problem_json = json.dumps(problem)
     operation.attempt += 1
-    if retry and operation.attempt < 8:
+    if retry and operation.attempt < max_attempts:
         operation.status = "pending"
         operation.phase = "retry_wait"
-        operation.next_attempt_at = datetime.now(UTC)
+        operation.next_attempt_at = datetime.now(UTC) + timedelta(seconds=retry_delay_seconds)
     else:
         operation.status = "failed"
         operation.phase = "failed"

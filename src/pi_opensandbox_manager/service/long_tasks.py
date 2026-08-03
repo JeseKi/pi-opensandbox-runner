@@ -21,7 +21,9 @@ from ..crypto import CredentialCipher
 from ..database import ManagerDatabase
 from ..models import ManagerOperation, ModelDeployment, RunnerInstance, RunnerPolicy
 from ..problems import ManagerProblem
-from .short_transactions import mark_operation_failed
+from .short_transactions import enqueue_sandbox_recovery, mark_operation_failed
+
+RECOVERY_RETRY_DELAYS_SECONDS = (5.0, 15.0)
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,8 @@ class OperationExecutor:
         try:
             if kind == "provision":
                 self._provision(operation_id)
+            elif kind == "recovery":
+                self._provision(operation_id, force_recreate=True)
             elif kind == "stop":
                 self._stop(operation_id, destroy=False)
             elif kind == "destroy":
@@ -176,7 +180,7 @@ class OperationExecutor:
             if instance is not None:
                 instance.phase = value
 
-    def _provision(self, operation_id: str) -> None:
+    def _provision(self, operation_id: str, *, force_recreate: bool = False) -> None:
         item = self._load(operation_id)
         self._phase(operation_id, "issuing_model_key")
         litellm = LiteLLMAdminClient(self.settings)
@@ -194,7 +198,18 @@ class OperationExecutor:
         opensandbox = OpenSandboxClient(self.settings)
         try:
             sandbox_id = item.sandbox_id
-            recover_by_metadata = sandbox_id is None
+            recover_by_metadata = sandbox_id is None and not force_recreate
+            if force_recreate and sandbox_id is not None:
+                try:
+                    opensandbox.delete(sandbox_id)
+                except UpstreamProblem as exc:
+                    if exc.status_code != 404:
+                        raise
+                sandbox_id = None
+                with self.database.session() as db:
+                    instance = db.get(RunnerInstance, item.instance_id)
+                    if instance is not None:
+                        instance.sandbox_id = None
             if sandbox_id is not None:
                 try:
                     current = opensandbox.get(sandbox_id)
@@ -323,7 +338,20 @@ class OperationExecutor:
                 return
             # execute_next already increments the attempt before I/O.
             operation.attempt = max(operation.attempt - 1, 0)
-            mark_operation_failed(db, operation_id, problem, retry=retryable)
+            is_recovery = operation.kind == "recovery"
+            retry_delay_seconds = (
+                RECOVERY_RETRY_DELAYS_SECONDS[operation.attempt]
+                if is_recovery and operation.attempt < len(RECOVERY_RETRY_DELAYS_SECONDS)
+                else 0
+            )
+            mark_operation_failed(
+                db,
+                operation_id,
+                problem,
+                retry=retryable or is_recovery,
+                max_attempts=3 if is_recovery else 8,
+                retry_delay_seconds=retry_delay_seconds,
+            )
 
     def _wait_running(self, client: OpenSandboxClient, sandbox_id: str) -> None:
         deadline = time.monotonic() + self.settings.provision_timeout_seconds
@@ -427,3 +455,50 @@ def _bridge_token_hash(token: str) -> str:
     return "h" + (
         base64.urlsafe_b64encode(hashlib.sha256(token.encode()).digest()).decode().rstrip("=")
     )
+
+
+class SandboxRecoveryMonitor:
+    """Detect ready instances whose OpenSandbox container is no longer active."""
+
+    def __init__(self, database: ManagerDatabase, settings: ManagerSettings):
+        self.database = database
+        self.settings = settings
+
+    def check_once(self) -> int:
+        with self.database.session() as db:
+            candidates = list(
+                db.scalars(
+                    select(RunnerInstance.id).where(
+                        RunnerInstance.state == "ready",
+                        RunnerInstance.sandbox_id.is_not(None),
+                    )
+                )
+            )
+
+        queued = 0
+        opensandbox = OpenSandboxClient(self.settings)
+        try:
+            for instance_id in candidates:
+                with self.database.session() as db:
+                    instance = db.get(RunnerInstance, instance_id)
+                    sandbox_id = instance.sandbox_id if instance is not None else None
+                if not sandbox_id:
+                    continue
+                try:
+                    sandbox = opensandbox.get(sandbox_id)
+                except UpstreamProblem as exc:
+                    # An unavailable control plane is not evidence that the sandbox died.
+                    if exc.status_code != 404:
+                        continue
+                else:
+                    status = sandbox.get("status")
+                    if isinstance(status, dict):
+                        status = status.get("state")
+                    if str(status or "").lower() in {"running", "ready"}:
+                        continue
+                with self.database.session() as db:
+                    if enqueue_sandbox_recovery(db, instance_id=instance_id) is not None:
+                        queued += 1
+        finally:
+            opensandbox.close()
+        return queued

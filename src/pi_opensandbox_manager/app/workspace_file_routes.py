@@ -3,17 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import (
-    Body,
-    Depends,
-    FastAPI,
-    File,
-    Form,
-    Header,
-    Query,
-    Response,
-    UploadFile,
-)
+from fastapi import Body, Depends, FastAPI, File, Form, Header, Query, Response, UploadFile
 
 from ..clients import BridgeClient, UpstreamProblem, as_manager_problem
 from ..config import ManagerSettings
@@ -25,39 +15,35 @@ from ..security import Principal
 from .helpers import BridgeConnection, _connection, _owned_instance
 
 
-def register_filesystem_routes(
+def register_workspace_file_routes(
     app: FastAPI,
     database: ManagerDatabase,
     settings: ManagerSettings,
     cipher: CredentialCipher,
     service_dependency: Any,
 ) -> None:
-    """Proxy full Runner-container file access for trusted consumers only."""
+    """Proxy the Bridge-enforced /root/workspace file boundary."""
 
     def require_path(path: str) -> str:
-        if not path.startswith("/") or "\x00" in path:
-            raise ManagerProblem(
-                422,
-                "invalid_container_path",
-                "path must be an absolute container path without NUL bytes",
-            )
+        if path.startswith("/") or "\x00" in path:
+            raise ManagerProblem(422, "invalid_workspace_path", "path must be workspace-relative")
         return path
 
-    def connection_for(subject_ref: str, caller: Principal) -> BridgeConnection:
-        caller.require("filesystem:access")
+    def connection_for(subject_ref: str, caller: Principal, scope: str) -> BridgeConnection:
+        caller.require(scope)
         with database.session() as db:
-            instance = _owned_instance(db, caller, subject_ref)
-            return _connection(instance, cipher)
+            return _connection(_owned_instance(db, caller, subject_ref), cipher)
 
     async def proxy(
         *,
         method: str,
         subject_ref: str,
         caller: Principal,
+        scope: str,
         bridge_path: str,
         **kwargs: Any,
     ) -> Response:
-        connection = connection_for(subject_ref, caller)
+        connection = connection_for(subject_ref, caller, scope)
         client = BridgeClient(settings, connection.bridge_url, connection.bridge_token)
         try:
             upstream = await asyncio.to_thread(client.passthrough, method, bridge_path, **kwargs)
@@ -83,22 +69,21 @@ def register_filesystem_routes(
         )
 
     @app.get(
-        "/v1/instances/{subject_ref}/filesystem",
+        "/v1/instances/{subject_ref}/workspace-files",
         **api_doc(
-            summary="列出 Runner 容器目录",
+            summary="列出受限工作区目录",
             description=(
-                "列出 ready Instance 中绝对容器路径的目录内容。该接口可访问整个 Runner 容器，"
-                "包括不属于任一 Session workspace 的文件；只应授予已完成最终用户授权的可信"
-                "业务系统。需要 `filesystem:access` scope。"
+                "列出 Instance `/root/workspace` 内的相对路径。Bridge 会拒绝绝对路径、父目录跳转和"
+                "符号链接逃逸；需要 `workspace:read` scope。"
             ),
-            tag="Filesystem（容器文件系统）",
-            operation_id="list_manager_filesystem",
-            response_description="Bridge 返回的目录列表 JSON。",
+            tag="Workspace（工作区）",
+            operation_id="list_manager_workspace_files",
+            response_description="工作区目录 JSON。",
         ),
     )
-    async def list_filesystem(
+    async def list_files(
         subject_ref: str,
-        path: Annotated[str, Query(min_length=1, max_length=4096)] = "/",
+        path: Annotated[str, Query(max_length=4096)] = "",
         depth: Annotated[int, Query(ge=0, le=64)] = 1,
         caller: Principal = Depends(service_dependency),
     ) -> Response:
@@ -106,67 +91,50 @@ def register_filesystem_routes(
             method="GET",
             subject_ref=subject_ref,
             caller=caller,
-            bridge_path="/files",
+            scope="workspace:read",
+            bridge_path="/workspace-files",
             params={"path": require_path(path), "depth": depth},
         )
 
     @app.get(
-        "/v1/instances/{subject_ref}/filesystem/content",
+        "/v1/instances/{subject_ref}/workspace-files/content",
         **api_doc(
-            summary="读取或下载容器文件",
+            summary="读取受限工作区文件",
             description=(
-                "读取绝对容器路径的文件内容。可使用标准 Range 或 offset/limit 局部读取，"
-                "但两者不能组合；完整读取会透传强 ETag。需要 `filesystem:access` scope。"
+                "读取 `/root/workspace` 内的相对常规文件，并返回内容、ETag、文件大小和修改时间。"
+                "Content-Type 与 Content-Disposition 仅为文件元信息；需要 `workspace:read` scope。"
             ),
-            tag="Filesystem（容器文件系统）",
-            operation_id="read_manager_filesystem_file",
-            response_description=(
-                "文件原始内容及 ETag、Content-Disposition、Content-Range 等响应头。"
-            ),
+            tag="Workspace（工作区）",
+            operation_id="read_manager_workspace_file",
+            response_description="文件原始内容及文件元信息响应头。",
         ),
     )
     async def read_file(
         subject_ref: str,
         path: Annotated[str, Query(min_length=1, max_length=4096)],
-        offset: Annotated[int | None, Query(ge=1)] = None,
-        limit: Annotated[int | None, Query(ge=1, le=100_000)] = None,
-        range_header: Annotated[str | None, Header(alias="Range")] = None,
         caller: Principal = Depends(service_dependency),
     ) -> Response:
-        if range_header is not None and (offset is not None or limit is not None):
-            raise ManagerProblem(
-                422,
-                "invalid_file_range",
-                "Range cannot be combined with offset or limit",
-            )
-        params: dict[str, Any] = {"path": require_path(path)}
-        if offset is not None:
-            params["offset"] = offset
-        if limit is not None:
-            params["limit"] = limit
-        headers = {"Range": range_header} if range_header is not None else None
         return await proxy(
             method="GET",
             subject_ref=subject_ref,
             caller=caller,
-            bridge_path="/files/content",
-            params=params,
-            headers=headers,
+            scope="workspace:read",
+            bridge_path="/workspace-files/content",
+            params={"path": require_path(path)},
         )
 
     @app.put(
-        "/v1/instances/{subject_ref}/filesystem/content",
+        "/v1/instances/{subject_ref}/workspace-files/content",
         status_code=204,
         **api_doc(
-            summary="条件保存容器文本文件",
+            summary="条件保存受限工作区文本文件",
             description=(
-                "原子替换已有绝对路径的 UTF-8 文本文件。请求必须包含 `text/plain` Content-Type "
-                "和完整读取取得的强 If-Match ETag；文本最大 1 MiB。需要 "
-                "`filesystem:access` scope。"
+                "原子替换既有的 UTF-8 文本文件，最大 1 MiB。必须带 text/plain Content-Type 和"
+                "完整读取取得的 If-Match ETag；需要 `workspace:write` scope。"
             ),
-            tag="Filesystem（容器文件系统）",
-            operation_id="update_manager_filesystem_file",
-            response_description="保存成功；ETag 响应头是新版本。",
+            tag="Workspace（工作区）",
+            operation_id="update_manager_restricted_workspace_file",
+            response_description="保存成功；ETag 为新版本。",
         ),
     )
     async def update_file(
@@ -177,31 +145,32 @@ def register_filesystem_routes(
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
         caller: Principal = Depends(service_dependency),
     ) -> Response:
-        headers = {key: value for key, value in {
-            "Content-Type": content_type,
-            "If-Match": if_match,
-        }.items() if value is not None}
+        headers = {
+            key: value
+            for key, value in {"Content-Type": content_type, "If-Match": if_match}.items()
+            if value is not None
+        }
         return await proxy(
             method="PUT",
             subject_ref=subject_ref,
             caller=caller,
-            bridge_path="/files/content",
+            scope="workspace:write",
+            bridge_path="/workspace-files/content",
             params={"path": require_path(path)},
             content=content,
             headers=headers or None,
         )
 
     @app.delete(
-        "/v1/instances/{subject_ref}/filesystem/content",
+        "/v1/instances/{subject_ref}/workspace-files/content",
         status_code=204,
         **api_doc(
-            summary="条件删除容器文件",
+            summary="条件删除受限工作区文件",
             description=(
-                "删除已有绝对路径的常规文件，必须带完整读取取得的强 If-Match ETag；"
-                "不支持递归删除目录。需要 `filesystem:access` scope。"
+                "删除相对工作区常规文件，必须携带 If-Match ETag；需要 `workspace:write` scope。"
             ),
-            tag="Filesystem（容器文件系统）",
-            operation_id="delete_manager_filesystem_file",
+            tag="Workspace（工作区）",
+            operation_id="delete_manager_restricted_workspace_file",
             response_description="文件已删除。",
         ),
     )
@@ -216,23 +185,24 @@ def register_filesystem_routes(
             method="DELETE",
             subject_ref=subject_ref,
             caller=caller,
-            bridge_path="/files",
+            scope="workspace:write",
+            bridge_path="/workspace-files/content",
             params={"path": require_path(path)},
             headers=headers,
         )
 
     @app.post(
-        "/v1/instances/{subject_ref}/filesystem/upload",
+        "/v1/instances/{subject_ref}/workspace-files/upload",
         status_code=201,
         **api_doc(
-            summary="上传新容器文件",
+            summary="创建受限工作区文件",
             description=(
-                "以 multipart/form-data 创建新文件。path 必须是绝对路径，也可指向现有目录；"
-                "必须提供 If-None-Match: *，不会覆盖已有文件。需要 `filesystem:access` scope。"
+                "以 multipart/form-data 在工作区创建相对路径文件，必须提供 If-None-Match: *；"
+                "需要 `workspace:write` scope。"
             ),
-            tag="Filesystem（容器文件系统）",
-            operation_id="upload_manager_filesystem_file",
-            response_description="文件已创建；ETag 响应头对应新内容。",
+            tag="Workspace（工作区）",
+            operation_id="upload_manager_workspace_file",
+            response_description="文件已创建；ETag 为新版本。",
         ),
     )
     async def upload_file(
@@ -247,7 +217,8 @@ def register_filesystem_routes(
             method="POST",
             subject_ref=subject_ref,
             caller=caller,
-            bridge_path="/files/upload",
+            scope="workspace:write",
+            bridge_path="/workspace-files/upload",
             headers=headers,
             files={
                 "file": (

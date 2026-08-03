@@ -20,6 +20,7 @@ class ManagerSettings:
     operation_poll_seconds: float = 0.5
     http_timeout_seconds: float = 30.0
     provision_timeout_seconds: float = 180.0
+    sandbox_healthcheck_seconds: float = 60.0
     terminal_public_ws_url: str = "ws://127.0.0.1:8090/v1/terminal-connections"
     terminal_allowed_origins: str = ""
     terminal_ticket_ttl_seconds: int = 60
@@ -53,13 +54,14 @@ class ManagerSettings:
             provision_timeout_seconds=float(
                 os.getenv("RUNNER_MANAGER_PROVISION_TIMEOUT_SECONDS", "180")
             ),
+            sandbox_healthcheck_seconds=float(
+                os.getenv("RUNNER_MANAGER_SANDBOX_HEALTHCHECK_SECONDS", "60")
+            ),
             terminal_public_ws_url=os.getenv(
                 "RUNNER_MANAGER_TERMINAL_PUBLIC_WS_URL",
                 "ws://127.0.0.1:8090/v1/terminal-connections",
             ),
-            terminal_allowed_origins=os.getenv(
-                "RUNNER_MANAGER_TERMINAL_ALLOWED_ORIGINS", ""
-            ),
+            terminal_allowed_origins=os.getenv("RUNNER_MANAGER_TERMINAL_ALLOWED_ORIGINS", ""),
             terminal_ticket_ttl_seconds=int(
                 os.getenv("RUNNER_MANAGER_TERMINAL_TICKET_TTL_SECONDS", "60")
             ),
