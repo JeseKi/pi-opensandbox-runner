@@ -78,9 +78,10 @@ Compose 将该文件以只读方式挂载给 Manager；部署时原子替换文�
 配置文件的 `egress_domains`。
 
 配置结构为 `{ "version": 1, "models": [...], "policies": [...] }`。`models` 条目包含
-`slug`、`label`、`provider_model`、`api`、`secret_ref`、`context_window`、`max_tokens` 和
-`reasoning`；`policies` 条目包含现有 Policy 的全部资源、限流和 egress 字段。slug、模型引用和
-域名都在加载时校验。删除条目会将其从 catalog 下架：不能创建新的 Instance/Session，但历史实例
+`slug`、`label`、`provider_model`、`api`、`secret_ref`、`context_window`、`max_tokens`、
+`reasoning` 和 `input`；`input` 默认 `["text"]`，若模型支持视觉则设为
+`["text", "image"]`。该声明会原样下发给 Pi，不会自动探测 LiteLLM 上游能力。`policies` 条目
+包含现有 Policy 的全部资源、限流和 egress 字段。slug、模型引用和域名都在加载时校验。删除条目会将其从 catalog 下架：不能创建新的 Instance/Session，但历史实例
 和 sandbox recovery 继续使用数据库保存的版本快照。
 
 列出已发布配置：

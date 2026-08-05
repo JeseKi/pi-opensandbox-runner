@@ -56,8 +56,8 @@ uv run pi-runner-manager-cli \
   models
 ```
 
-输出包括 Model slug、显示名称、Provider Model、API 类型、上下文窗口、最大输出 token 和
-reasoning 能力。该命令只读取 Manager catalog，不验证对应 LiteLLM 上游此刻是否可用。
+输出包括 Model slug、显示名称、Provider Model、API 类型、上下文窗口、最大输出 token、
+reasoning 和输入模态（`image` 表示视觉）能力。该命令只读取 Manager catalog，不验证对应 LiteLLM 上游此刻是否可用。
 
 ### `policies`
 

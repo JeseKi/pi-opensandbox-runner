@@ -12,7 +12,13 @@ from pi_opensandbox_manager.database import ManagerDatabase
 from pi_opensandbox_manager.models import ModelDeployment, RunnerPolicy
 
 
-def write_catalog(path: Path, *, label: str = "Coding", policies: list[dict] | None = None) -> None:
+def write_catalog(
+    path: Path,
+    *,
+    label: str = "Coding",
+    input: list[str] | None = None,
+    policies: list[dict] | None = None,
+) -> None:
     path.write_text(
         json.dumps(
             {
@@ -26,6 +32,7 @@ def write_catalog(path: Path, *, label: str = "Coding", policies: list[dict] | N
                         "context_window": 1000,
                         "max_tokens": 100,
                         "reasoning": True,
+                        "input": input if input is not None else ["text"],
                     }
                 ],
                 "policies": policies
@@ -69,6 +76,7 @@ def test_catalog_sync_versions_models_and_policies(tmp_path: Path) -> None:
         model = db.query(ModelDeployment).filter_by(slug="coding-default", revision=1).one()
         policy = db.query(RunnerPolicy).filter_by(slug="default", revision=1).one()
         assert model.state == "published"
+        assert json.loads(model.input_json) == ["text"]
         assert policy.state == "published"
 
     write_catalog(path, label="Coding v2")
@@ -82,6 +90,34 @@ def test_catalog_sync_versions_models_and_policies(tmp_path: Path) -> None:
         assert (policy_one.state, policy_two.state) == ("superseded", "published")
         assert json.loads(policy_two.model_revisions_json) == {"coding-default": 2}
     database.dispose()
+
+
+def test_catalog_input_capability_creates_model_revision(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.json"
+    write_catalog(path)
+    database = ManagerDatabase(
+        ManagerSettings(
+            database_url=f"sqlite:///{tmp_path / 'manager.db'}",
+            credential_encryption_key=Fernet.generate_key().decode(),
+        )
+    )
+    database.initialize()
+    with database.session() as db:
+        assert sync_catalog(db, load_catalog(path))
+    write_catalog(path, input=["text", "image"])
+    with database.session() as db:
+        assert sync_catalog(db, load_catalog(path))
+        model = db.query(ModelDeployment).filter_by(slug="coding-default", revision=2).one()
+        assert json.loads(model.input_json) == ["text", "image"]
+    database.dispose()
+
+
+@pytest.mark.parametrize("input", [[], ["image"], ["text", "text"], ["audio"]])
+def test_catalog_rejects_invalid_input_modalities(tmp_path: Path, input: list[str]) -> None:
+    path = tmp_path / "catalog.json"
+    write_catalog(path, input=input)
+    with pytest.raises(CatalogConfigError):
+        load_catalog(path)
 
 
 def test_catalog_sync_retires_removed_policy(tmp_path: Path) -> None:

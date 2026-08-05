@@ -9,7 +9,8 @@
       "secret_ref": "DEEPSEEK_API_KEY",
       "context_window": 264000,
       "max_tokens": 16000,
-      "reasoning": true
+      "reasoning": true,
+      "input": ["text"]
     }
   ],
   "policies": [

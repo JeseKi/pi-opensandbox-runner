@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _default_text_input() -> list[Literal["text", "image"]]:
+    return ["text"]
 
 
 class ProblemOut(BaseModel):
@@ -42,8 +47,18 @@ class ModelOut(BaseModel):
     context_window: int = Field(description="模型声明的最大上下文窗口。")
     max_tokens: int = Field(description="单次生成允许的最大输出 token 数。")
     reasoning: bool = Field(description="模型是否支持 reasoning/thinking 能力。")
+    input: list[Literal["text", "image"]] = Field(
+        validation_alias="input_json",
+        serialization_alias="input",
+        description="模型支持的输入模态；包含 image 即表示支持视觉输入。",
+    )
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def decode_input_json(cls, value: Any) -> Any:
+        return json.loads(value) if isinstance(value, str) else value
 
 
 class PolicyOut(BaseModel):
@@ -319,6 +334,10 @@ class AdminModelCreate(BaseModel):
     context_window: int = Field(default=128_000, ge=1, description="上下文窗口。")
     max_tokens: int = Field(default=16_000, ge=1, description="最大输出 token 数。")
     reasoning: bool = Field(default=True, description="是否支持 reasoning/thinking。")
+    input: list[Literal["text", "image"]] = Field(
+        default_factory=_default_text_input,
+        description="模型支持的输入模态；包含 image 即表示支持视觉输入。",
+    )
 
 
 class AdminPolicyCreate(BaseModel):

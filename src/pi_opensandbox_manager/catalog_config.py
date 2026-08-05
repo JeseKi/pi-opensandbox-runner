@@ -21,6 +21,10 @@ DOMAIN_PATTERN = re.compile(
 RESERVED_EGRESS_TARGETS = frozenset({"litellm", "opensandbox"})
 
 
+def _default_text_input() -> list[Literal["text", "image"]]:
+    return ["text"]
+
+
 class CatalogConfigError(ValueError):
     pass
 
@@ -36,6 +40,20 @@ class CatalogModel(BaseModel):
     context_window: int = Field(ge=1)
     max_tokens: int = Field(ge=1)
     reasoning: bool = True
+    input: list[Literal["text", "image"]] = Field(default_factory=_default_text_input)
+
+    @field_validator("input")
+    @classmethod
+    def validate_input(
+        cls, value: list[Literal["text", "image"]]
+    ) -> list[Literal["text", "image"]]:
+        if not value:
+            raise ValueError("input must contain at least one modality")
+        if len(value) != len(set(value)):
+            raise ValueError("input must not contain duplicates")
+        if "text" not in value:
+            raise ValueError("input must include text")
+        return value
 
 
 class CatalogPolicy(BaseModel):
@@ -155,7 +173,8 @@ def sync_catalog(db: Session, snapshot: CatalogSnapshot) -> bool:
         db.add(
             ModelDeployment(
                 id=str(uuid4()),
-                **configured_model.model_dump(),
+                **configured_model.model_dump(exclude={"input"}),
+                input_json=json.dumps(configured_model.input),
                 state="published",
                 revision=revision,
             )
@@ -233,7 +252,7 @@ def _same_model(record: ModelDeployment, configured: CatalogModel) -> bool:
             "max_tokens",
             "reasoning",
         )
-    )
+    ) and json.loads(record.input_json) == configured.input
 
 
 def _same_policy(

@@ -170,6 +170,7 @@ class OperationExecutor:
                         "context_window": pinned_models[slug].context_window,
                         "max_tokens": pinned_models[slug].max_tokens,
                         "reasoning": pinned_models[slug].reasoning,
+                        "input": json.loads(pinned_models[slug].input_json),
                     }
                     for slug in model_slugs
                 ],
@@ -445,7 +446,7 @@ class OperationExecutor:
                             "id": model["slug"],
                             "name": model["label"],
                             "reasoning": model["reasoning"],
-                            "input": ["text"],
+                            "input": model["input"],
                             "contextWindow": model["context_window"],
                             "maxTokens": model["max_tokens"],
                         }

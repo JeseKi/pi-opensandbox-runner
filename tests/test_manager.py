@@ -34,6 +34,7 @@ from pi_opensandbox_manager.schemas import InstanceEnsure
 from pi_opensandbox_manager.security import bootstrap
 from pi_opensandbox_manager.service.long_tasks import (
     OperationExecutor,
+    ProvisionInput,
     SandboxRecoveryMonitor,
 )
 from pi_opensandbox_manager.service.short_transactions import (
@@ -75,6 +76,7 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         assert response.json()[0]["slug"] == "coding-default"
+        assert response.json()[0]["input"] == ["text"]
         assert response.headers["Runner-Protocol-Version"] == "1"
 
         admin = client.post(
@@ -135,6 +137,37 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
         }
         assert command_schema["properties"]["command"]["maxLength"] == 100_000
         assert command_schema["properties"]["timeout"]["anyOf"][0]["maximum"] == 86_400_000
+
+
+def test_manager_forwards_visual_input_capability(tmp_path: Path) -> None:
+    executor = OperationExecutor(ManagerDatabase(settings(tmp_path)), settings(tmp_path))
+    config = executor._bridge_model_config(
+        ProvisionInput(
+            operation_id="operation",
+            instance_id="instance",
+            consumer_id="consumer",
+            subject_ref="subject",
+            sandbox_id=None,
+            bridge_token="bridge-token",
+            litellm_key="litellm-key",
+            litellm_key_alias="alias",
+            pi_volume_name="pi-volume",
+            workspace_volume_name="workspace-volume",
+            policy={},
+            models=[
+                {
+                    "slug": "vision-model",
+                    "label": "Vision Model",
+                    "api": "openai-completions",
+                    "context_window": 128000,
+                    "max_tokens": 16000,
+                    "reasoning": True,
+                    "input": ["text", "image"],
+                }
+            ],
+        )
+    )
+    assert config["providers"]["litellm"]["models"][0]["input"] == ["text", "image"]
 
 
 def test_manager_hot_reloads_catalog_and_keeps_last_valid_snapshot(tmp_path: Path) -> None:

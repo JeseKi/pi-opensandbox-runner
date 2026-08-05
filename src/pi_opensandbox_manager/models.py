@@ -57,6 +57,7 @@ class ModelDeployment(Base):
     context_window: Mapped[int] = mapped_column(Integer, default=128_000)
     max_tokens: Mapped[int] = mapped_column(Integer, default=16_000)
     reasoning: Mapped[bool] = mapped_column(Boolean, default=True)
+    input_json: Mapped[str] = mapped_column(Text, default='["text"]', nullable=False)
     state: Mapped[str] = mapped_column(String(20), default="published")
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
