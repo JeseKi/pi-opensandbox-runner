@@ -66,7 +66,7 @@ Docker backend 使用版本约束补丁，使 sidecar 加入内部网络并阻�
 匹配时镜像构建会失败。
 
 egress 是 Policy 的一部分。C 端用户和浅层管理员不能直接追加任意域名；部署者只能通过
-`runner-catalog.json` 发布新的 Policy revision。配置加载会拒绝 URL、IP、端口、重复项和内部
+`runner-catalog.toml` 发布新的 Policy revision。配置加载会拒绝 URL、IP、端口、重复项和内部
 保留目标；错误配置不会替换最后一次有效 catalog。
 
 ## 文件权限

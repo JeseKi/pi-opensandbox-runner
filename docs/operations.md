@@ -61,7 +61,7 @@ Manager 在启动时立即、随后每 `RUNNER_MANAGER_SANDBOX_HEALTHCHECK_SECON
 
 ## Model 与 Policy
 
-`config/runner-catalog.json` 是 Manager 模型与 Policy 的唯一写来源。文件统一定义：
+`config/runner-catalog.toml` 是 Manager 模型与 Policy 的唯一写来源。文件统一定义：
 
 - 可用模型与默认模型；
 - CPU、内存和最大活动 Session；
@@ -93,7 +93,7 @@ uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" policies
 
 CLI 只读取已发布的 Manager catalog，不验证 LiteLLM 上游的实时可用性。
 
-修改 `runner-catalog.json` 不会创建 LiteLLM 上游路由。新增模型前，仍须先在
+修改 `runner-catalog.toml` 不会创建 LiteLLM 上游路由。新增模型前，仍须先在
 `litellm/config.yaml` 或 LiteLLM 管理面配置并验证同名 alias。`provider_model` 和 `secret_ref`
 仅作为 Manager 控制面元数据保存。旧的 `/admin/v1/models` 和 `/admin/v1/policies` 写接口保留，
 但固定返回 `409 catalog_file_managed`。

@@ -29,7 +29,7 @@ Server 的 ready Instance 在下一条 Prompt 前滚动重启 Pi；正在生成�
 
 ## Policy 授权
 
-在 `config/runner-catalog.json` 的 Policy 中配置 `mcp_server_ids`。Manager 创建 LiteLLM virtual key
+在 `config/runner-catalog.toml` 的 Policy 中配置 `mcp_server_ids`。Manager 创建 LiteLLM virtual key
 时会把这些 Server ID 写入 `object_permission.mcp_servers`；未列出的 Server 即使存在于 Gateway 中也
 不可被该 Instance 调用。
 

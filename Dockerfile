@@ -81,7 +81,7 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 COPY extensions/pi-runner-mcp/package.json extensions/pi-runner-mcp/package-lock.json /opt/pi-runner-mcp/
 RUN npm ci --prefix /opt/pi-runner-mcp --omit=dev --ignore-scripts --no-audit --no-fund
 COPY extensions/pi-runner-mcp/src /opt/pi-runner-mcp/src
-COPY config/runner-catalog.json /opt/pi-runner/runner-catalog.json
+COPY config/runner-catalog.toml /opt/pi-runner/runner-catalog.toml
 COPY scripts/container-entrypoint.py /usr/local/bin/pi-runner-entrypoint
 RUN chmod 755 /usr/local/bin/pi-runner-entrypoint
 WORKDIR /app

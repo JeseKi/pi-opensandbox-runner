@@ -7,7 +7,7 @@ RUNTIME_DIR="${PROJECT_DIR}/.runtime"
 SERVER_URL="${OPENSANDBOX_SERVER_URL:-http://127.0.0.1:8080}"
 BRIDGE_IMAGE="${PI_RUNNER_IMAGE:-pi-opensandbox-runner:local}"
 LITELLM_ENV_FILE="${PROJECT_DIR}/.litellm.env"
-RUNNER_CATALOG_FILE="${PROJECT_DIR}/config/runner-catalog.json"
+RUNNER_CATALOG_FILE="${PROJECT_DIR}/config/runner-catalog.toml"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -74,6 +74,17 @@ _domains_to_json() {
   printf '%s\n' "$@" | LC_ALL=C sort -u | jq -Rsc 'split("\n") | map(select(length > 0))'
 }
 
+catalog_to_json() {
+  python3 - "$RUNNER_CATALOG_FILE" <<'PY'
+import json
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as source:
+    json.dump(tomllib.load(source), sys.stdout)
+PY
+}
+
 resolve_egress_policy() {
   local policy_slug="$1"
   # Both services stay on the private Docker network. LiteLLM is the model
@@ -85,16 +96,16 @@ resolve_egress_policy() {
     echo "Missing runner catalog config: $RUNNER_CATALOG_FILE" >&2
     return 1
   }
-  jq -e --arg policy "$policy_slug" '
+  catalog_to_json | jq -e --arg policy "$policy_slug" '
     .policies[] | select(.slug == $policy) | .egress_domains | arrays
-  ' "$RUNNER_CATALOG_FILE" >/dev/null || {
+  ' >/dev/null || {
     echo "Unknown runner catalog policy: $policy_slug" >&2
     return 1
   }
   while IFS= read -r domain; do
     validate_egress_domain "$domain" || { echo "Invalid catalog domain '$domain'." >&2; return 1; }
     domains+=("$domain")
-  done < <(jq -r --arg policy "$policy_slug" '.policies[] | select(.slug == $policy) | .egress_domains[]' "$RUNNER_CATALOG_FILE")
+  done < <(catalog_to_json | jq -r --arg policy "$policy_slug" '.policies[] | select(.slug == $policy) | .egress_domains[]')
 
   RESOLVED_EGRESS_POLICY="$(jq -cn --argjson domains "$(_domains_to_json "${domains[@]}")" \
     '{defaultAction: "deny", egress: [$domains[] | {action: "allow", target: .}]}')"
@@ -106,7 +117,7 @@ resolve_egress_policy() {
 
 bridge_model_config() {
   local policy_slug="$1"
-  jq -ce --arg policy "$policy_slug" '
+  catalog_to_json | jq -ce --arg policy "$policy_slug" '
     . as $catalog
     | ($catalog.policies[] | select(.slug == $policy)) as $policy
     | {
@@ -131,7 +142,7 @@ bridge_model_config() {
           }
         }
       }
-  ' "$RUNNER_CATALOG_FILE"
+  '
 }
 
 load_egress_policy_from_state() {

@@ -23,7 +23,7 @@ from ..schemas import InstanceEnsure
 
 def seed_catalog(db: Session) -> None:
     """Compatibility helper for tests and direct local administration."""
-    sync_catalog(db, load_catalog(Path("config/runner-catalog.json")))
+    sync_catalog(db, load_catalog(Path("config/runner-catalog.toml")))
 
 
 def published_policy(db: Session, slug: str) -> RunnerPolicy:

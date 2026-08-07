@@ -19,49 +19,51 @@ def write_catalog(
     input: list[str] | None = None,
     policies: list[dict] | None = None,
 ) -> None:
-    path.write_text(
-        json.dumps(
+    document = {
+        "version": 1,
+        "models": [
             {
-                "version": 1,
-                "models": [
-                    {
-                        "slug": "coding-default",
-                        "label": label,
-                        "provider_model": "provider/coding",
-                        "api": "openai-completions",
-                        "context_window": 1000,
-                        "max_tokens": 100,
-                        "reasoning": True,
-                        "input": input if input is not None else ["text"],
-                    }
-                ],
-                "policies": policies
-                if policies is not None
-                else [
-                    {
-                        "slug": "default",
-                        "label": "Default",
-                        "model_slugs": ["coding-default"],
-                        "default_model_slug": "coding-default",
-                        "cpu": "1",
-                        "memory": "1Gi",
-                        "max_active_sessions": 1,
-                        "max_budget": 1,
-                        "budget_duration": "24h",
-                        "rpm_limit": 1,
-                        "tpm_limit": 100,
-                        "max_parallel_requests": 1,
-                        "egress_domains": ["pypi.org"],
-                    }
-                ],
+                "slug": "coding-default",
+                "label": label,
+                "provider_model": "provider/coding",
+                "api": "openai-completions",
+                "context_window": 1000,
+                "max_tokens": 100,
+                "reasoning": True,
+                "input": input if input is not None else ["text"],
             }
-        ),
-        encoding="utf-8",
-    )
+        ],
+        "policies": policies
+        if policies is not None
+        else [
+            {
+                "slug": "default",
+                "label": "Default",
+                "model_slugs": ["coding-default"],
+                "default_model_slug": "coding-default",
+                "cpu": "1",
+                "memory": "1Gi",
+                "max_active_sessions": 1,
+                "max_budget": 1,
+                "budget_duration": "24h",
+                "rpm_limit": 1,
+                "tpm_limit": 100,
+                "max_parallel_requests": 1,
+                "egress_domains": ["pypi.org"],
+            }
+        ],
+    }
+    lines = ["version = 1", ""]
+    for table_name in ("models", "policies"):
+        for item in document[table_name]:
+            lines.append(f"[[{table_name}]]")
+            lines.extend(f"{key} = {json.dumps(value)}" for key, value in item.items())
+            lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def test_catalog_sync_versions_models_and_policies(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.json"
+    path = tmp_path / "catalog.toml"
     write_catalog(path)
     database = ManagerDatabase(
         ManagerSettings(
@@ -93,7 +95,7 @@ def test_catalog_sync_versions_models_and_policies(tmp_path: Path) -> None:
 
 
 def test_catalog_input_capability_creates_model_revision(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.json"
+    path = tmp_path / "catalog.toml"
     write_catalog(path)
     database = ManagerDatabase(
         ManagerSettings(
@@ -114,14 +116,14 @@ def test_catalog_input_capability_creates_model_revision(tmp_path: Path) -> None
 
 @pytest.mark.parametrize("input", [[], ["image"], ["text", "text"], ["audio"]])
 def test_catalog_rejects_invalid_input_modalities(tmp_path: Path, input: list[str]) -> None:
-    path = tmp_path / "catalog.json"
+    path = tmp_path / "catalog.toml"
     write_catalog(path, input=input)
     with pytest.raises(CatalogConfigError):
         load_catalog(path)
 
 
 def test_catalog_sync_retires_removed_policy(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.json"
+    path = tmp_path / "catalog.toml"
     write_catalog(path)
     database = ManagerDatabase(
         ManagerSettings(
@@ -140,10 +142,14 @@ def test_catalog_sync_retires_removed_policy(tmp_path: Path) -> None:
 
 
 def test_catalog_rejects_invalid_egress_domain(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.json"
+    path = tmp_path / "catalog.toml"
     write_catalog(path)
-    content = json.loads(path.read_text(encoding="utf-8"))
-    content["policies"][0]["egress_domains"] = ["https://pypi.org"]
-    path.write_text(json.dumps(content), encoding="utf-8")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'egress_domains = ["pypi.org"]',
+            'egress_domains = ["https://pypi.org"]',
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(CatalogConfigError, match="invalid egress domain"):
         load_catalog(path)

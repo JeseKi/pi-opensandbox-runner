@@ -1,0 +1,58 @@
+# Runner catalog 的格式版本。当前仅支持版本 1。
+version = 1
+
+# 每个 [[models]] 定义一个可由 Policy 授权的 LiteLLM 模型别名。
+[[models]]
+# 稳定、唯一的模型别名；必须包含 coding-default，供 Pi Bridge 使用。
+slug = "coding-default"
+# 面向用户显示的模型名称。
+label = "Coding Default"
+# LiteLLM 中实际的 provider/model 名称。
+provider_model = "deepseek/deepseek-v4-flash"
+# Pi 使用的 LiteLLM API 协议类型。
+api = "openai-completions"
+# 关联上游凭据的环境变量名；不在此文件中保存密钥本身。
+secret_ref = "DEEPSEEK_API_KEY"
+# 上游模型的上下文窗口和单次最大输出 token 数。
+context_window = 264000
+max_tokens = 16000
+# 模型是否支持 reasoning，以及可接受的输入模态（必须包含 text）。
+reasoning = true
+input = ["text"]
+
+# 每个 [[policies]] 定义一个可分配给 Runner Instance 的资源与访问策略。
+[[policies]]
+# 稳定、唯一的 Policy 标识，供 Manager API 和 scripts/up.sh 的 --policy 使用。
+slug = "consumer-default"
+# 面向用户显示的 Policy 名称。
+label = "Consumer Default"
+# 此 Policy 可使用的模型，以及其中默认选择的模型。
+model_slugs = ["coding-default"]
+default_model_slug = "coding-default"
+# Sandbox 的 CPU 与内存配额。
+cpu = "2"
+memory = "4Gi"
+# 一个 Instance 可同时运行的会话数。
+max_active_sessions = 4
+# LiteLLM virtual key 的预算额度与统计周期。
+max_budget = 5.0
+budget_duration = "24h"
+# LiteLLM virtual key 的请求、token 和并行请求限制。
+rpm_limit = 30
+tpm_limit = 1000000
+max_parallel_requests = 2
+# 可调用的 LiteLLM MCP Server ID。留空时 Agent 不会加载 MCP Gateway。
+mcp_server_ids = []
+# Sandbox 的额外出站域名白名单；LiteLLM 与 OpenSandbox 内部服务会自动加入。
+egress_domains = [
+  "github.com",
+  "api.github.com",
+  "raw.githubusercontent.com",
+  "deb.debian.org",
+  "mirrors.tuna.tsinghua.edu.cn",
+  "pypi.org",
+  "files.pythonhosted.org",
+  "pypi.tuna.tsinghua.edu.cn",
+  "registry.npmjs.org",
+  "registry.npmmirror.com",
+]

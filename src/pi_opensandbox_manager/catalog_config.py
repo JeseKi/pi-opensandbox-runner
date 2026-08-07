@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -151,9 +152,9 @@ def load_catalog(path: Path) -> CatalogSnapshot:
     except OSError as exc:
         raise CatalogConfigError(f"unable to read catalog config {path}: {exc}") from exc
     try:
-        raw: Any = json.loads(content)
+        raw: Any = tomllib.loads(content.decode("utf-8"))
         document = CatalogDocument.model_validate(raw)
-    except (json.JSONDecodeError, ValidationError) as exc:
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError) as exc:
         raise CatalogConfigError(f"invalid catalog config {path}: {exc}") from exc
     return CatalogSnapshot(document=document, content_hash=hashlib.sha256(content).hexdigest())
 

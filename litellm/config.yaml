@@ -1,5 +1,5 @@
 # Provider credentials are intentionally resolved only inside the LiteLLM container
-# from .litellm.env. Keep model aliases in sync with config/runner-catalog.json.
+# from .litellm.env. Keep model aliases in sync with config/runner-catalog.toml.
 model_list:
   - model_name: coding-default
     litellm_params:

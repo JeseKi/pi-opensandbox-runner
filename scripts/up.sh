@@ -21,6 +21,7 @@ need docker
 need curl
 need jq
 need openssl
+need python3
 
 [[ $# -ge 1 ]] || {
   usage >&2
@@ -55,9 +56,9 @@ case "$MIRROR_MODE_VALUE" in
 esac
 
 require_litellm_env
-if ! jq -e --arg model "$MODEL" --arg policy "$POLICY" \
+if ! catalog_to_json | jq -e --arg model "$MODEL" --arg policy "$POLICY" \
   '.policies[] | select(.slug == $policy and (.model_slugs | index($model)))' \
-  "$PROJECT_DIR/config/runner-catalog.json" >/dev/null; then
+  >/dev/null; then
   echo "Unknown LiteLLM model alias: $MODEL" >&2
   exit 2
 fi

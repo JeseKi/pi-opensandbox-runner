@@ -6,19 +6,20 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 
 def main() -> None:
     config_dir = Path(os.environ.setdefault("PI_CODING_AGENT_DIR", "/run/pi-agent"))
     config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    source = Path("/opt/pi-runner/runner-catalog.json")
+    source = Path("/opt/pi-runner/runner-catalog.toml")
     persistent = Path(
         os.environ.setdefault("PI_MODEL_CATALOG_PATH", "/root/.pi/bridge/models.json")
     )
     persistent.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not persistent.exists():
-        catalog = json.loads(source.read_text(encoding="utf-8"))
+        catalog = tomllib.loads(source.read_text(encoding="utf-8"))
         configured_models = catalog.get("models") if isinstance(catalog, dict) else None
         if not isinstance(configured_models, list):
             raise RuntimeError("runner catalog must contain a models list")
