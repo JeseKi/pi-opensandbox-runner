@@ -4,12 +4,15 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..catalog_config import CatalogConfigError, load_catalog, sync_catalog
 from ..config import ManagerSettings
@@ -127,9 +130,11 @@ def create_manager_app(
         description=APP_DESCRIPTION,
         lifespan=lifespan,
         openapi_url="/v1/openapi.json",
-        docs_url="/v1/docs",
+        docs_url=None,
         openapi_tags=OPENAPI_TAGS,
     )
+    static_directory = Path(__file__).resolve().parent.parent / "static"
+    app.mount("/assets", StaticFiles(directory=static_directory), name="assets")
     app.state.database = db_control
     app.state.worker_alive = False
     app.state.catalog_hash = None
@@ -181,6 +186,14 @@ def create_manager_app(
     @app.get("/healthz", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/v1/docs", include_in_schema=False)
+    async def swagger_ui() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url="/v1/openapi.json",
+            title=f"{app.title} - Swagger UI",
+            swagger_favicon_url="/assets/manager-logo.svg",
+        )
 
     @app.get("/readyz", include_in_schema=False)
     async def ready(request: Request) -> dict[str, str]:

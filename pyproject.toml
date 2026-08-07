@@ -36,6 +36,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pi_opensandbox_runner", "src/pi_opensandbox_manager"]
+artifacts = ["src/pi_opensandbox_manager/static/*.svg"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

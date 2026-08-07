@@ -59,6 +59,13 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     app = create_manager_app(configured)
     with TestClient(app) as client:
+        docs = client.get("/v1/docs")
+        assert docs.status_code == 200
+        assert "/assets/manager-logo.svg" in docs.text
+        logo = client.get("/assets/manager-logo.svg")
+        assert logo.status_code == 200
+        assert logo.headers["content-type"] == "image/svg+xml"
+
         unauthorized = client.get("/v1/catalog/models")
         assert unauthorized.status_code == 401
         assert unauthorized.json()["code"] == "missing_token"
