@@ -134,7 +134,11 @@ def _prepare_session(
                 bridge_session_id=payload.legacy_bridge_session_id,
                 title=payload.title,
                 model_slug=payload.model_slug,
-                cwd=payload.legacy_cwd or f"/root/workspace/sessions/{session_id}",
+                cwd=(
+                    payload.cwd
+                    or payload.legacy_cwd
+                    or f"/root/workspace/sessions/{session_id}"
+                ),
                 state="provisioning",
             )
             db.add(binding)
@@ -230,6 +234,7 @@ def _session_out(binding: SessionBinding) -> SessionOut:
         state=binding.state,
         title=binding.title,
         model_slug=binding.model_slug,
+        cwd=binding.cwd,
         active_turn_id=binding.active_turn_id,
         problem=_json(binding.problem_json),
         created_at=binding.created_at,

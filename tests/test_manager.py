@@ -253,6 +253,75 @@ def test_ensure_instance_and_job_are_idempotent(tmp_path: Path) -> None:
     database.dispose()
 
 
+def test_session_creation_uses_explicit_agent_cwd_or_session_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = settings(tmp_path)
+    database = ManagerDatabase(configured)
+    database.initialize()
+    bootstrap(database, configured)
+    cipher = CredentialCipher(configured.credential_encryption_key)
+    with database.session() as db:
+        seed_catalog(db)
+        consumer = db.query(Consumer).filter_by(slug="agent-runner").one()
+        policy = db.query(RunnerPolicy).filter_by(slug="consumer-default").one()
+        db.add(
+            RunnerInstance(
+                id="session-cwd-instance",
+                consumer_id=consumer.id,
+                subject_ref="session-cwd-user",
+                policy_id=policy.id,
+                state="ready",
+                phase="ready",
+                bridge_url="http://opensandbox:8080/proxy/bridge",
+                bridge_token_encrypted=cipher.encrypt("bridge-token"),
+                pi_volume_name="pi-session-cwd",
+                workspace_volume_name="workspace-session-cwd",
+                litellm_key_alias="key-session-cwd",
+            )
+        )
+
+    created: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.app.session_routes._find_bridge_session",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "pi_opensandbox_manager.clients.BridgeClient.create_session",
+        lambda _self, payload: (created.append(payload), {"id": f"bridge-{len(created)}"})[1],
+    )
+
+    app = create_manager_app(configured, database)
+    headers = {"Authorization": "Bearer rm_svc_test"}
+    with TestClient(app) as client:
+        explicit = client.put(
+            "/v1/instances/session-cwd-user/sessions/explicit-session",
+            headers=headers,
+            json={
+                "title": "Explicit directory",
+                "model_slug": "coding-default",
+                "cwd": "/root/workspace/projects/example",
+            },
+        )
+        assert explicit.status_code == 200
+        assert explicit.json()["cwd"] == "/root/workspace/projects/example"
+
+        default = client.put(
+            "/v1/instances/session-cwd-user/sessions/default-session",
+            headers=headers,
+            json={"title": "Default directory", "model_slug": "coding-default"},
+        )
+        assert default.status_code == 200
+        assert default.json()["cwd"] == "/root/workspace/sessions/default-session"
+
+    assert [item["cwd"] for item in created] == [
+        "/root/workspace/projects/example",
+        "/root/workspace/sessions/default-session",
+    ]
+    database.dispose()
+
+
 def test_seed_catalog_publishes_default_package_registry_egress_policy(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     database = ManagerDatabase(configured)

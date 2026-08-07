@@ -210,6 +210,15 @@ class SessionEnsure(BaseModel):
         description="Policy 允许的 model slug；可从 Catalog 查询。",
         examples=["coding-default"],
     )
+    cwd: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4096,
+        description=(
+            "可选的 Agent 初始工作目录，必须是容器内绝对路径；未设置时使用 "
+            "`/root/workspace/sessions/{session_id}`。这不是文件权限边界。"
+        ),
+    )
     legacy_bridge_session_id: str | None = Field(
         default=None,
         max_length=120,
@@ -231,6 +240,7 @@ class SessionOut(BaseModel):
     state: str = Field(description="provisioning、ready、running 或 failed。")
     title: str = Field(description="会话显示标题。")
     model_slug: str = Field(description="该会话使用的 model slug。")
+    cwd: str = Field(description="Agent 初始工作目录；不是文件权限边界。")
     active_turn_id: str | None = Field(
         default=None,
         description="当前活动 Turn ID；同一 Session 最多一个。",

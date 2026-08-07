@@ -133,7 +133,8 @@ curl -sS -X PUT \
   -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{
     "title":"首次会话",
-    "model_slug":"coding-default"
+    "model_slug":"coding-default",
+    "cwd":"/root/workspace/projects/example"
   }' | jq
 ```
 
@@ -144,6 +145,9 @@ PUT    /v1/instances/{subject_ref}/sessions/{session_id}
 GET    /v1/instances/{subject_ref}/sessions/{session_id}
 DELETE /v1/instances/{subject_ref}/sessions/{session_id}
 ```
+
+`cwd` 可指定 Agent 的初始工作目录，必须是容器内绝对路径；省略时 Manager 使用
+`/root/workspace/sessions/{session_id}`。`cwd` 只是初始目录，不是文件权限边界。
 
 `legacy_bridge_session_id` 和 `legacy_cwd` 仅用于旧数据迁移，新 consumer 不应设置。
 

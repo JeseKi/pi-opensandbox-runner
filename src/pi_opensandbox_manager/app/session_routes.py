@@ -154,8 +154,10 @@ def register_session_routes(
                 "在 ready Instance 中创建或取得一个 Pi Session。`session_id` 由调用方生成，并在"
                 "该 Instance 内稳定唯一；网络超时后可使用相同 ID 和请求体安全重试。\n\n"
                 "`model_slug` 必须由 Instance 当前 Policy 允许。`legacy_bridge_session_id` 和 "
-                "`legacy_cwd` 仅供旧数据迁移，新调用方不要设置。首次调用可能同步等待 Bridge 创建"
-                "会话，但不会运行 Agent Turn。\n\n需要 `sessions:write` scope。"
+                "可选 `cwd` 指定 Agent 的初始工作目录；省略时使用 "
+                "`/root/workspace/sessions/{session_id}`。`legacy_bridge_session_id` 和 "
+                "`legacy_cwd` 仅供旧数据迁移，新调用方不要设置。首次调用可能同步等待 Bridge "
+                "创建会话，但不会运行 Agent Turn。\n\n需要 `sessions:write` scope。"
             ),
             tag="Session（会话）",
             operation_id="ensure_manager_session",
