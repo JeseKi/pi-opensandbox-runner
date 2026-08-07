@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _default_text_input() -> list[Literal["text", "image"]]:
@@ -68,6 +68,77 @@ class PolicyOut(BaseModel):
     models: list[str] = Field(description="该 Policy 允许 Session 使用的 model slug。")
     default_model_slug: str = Field(description="该 Policy 的默认 model slug。")
     state: str = Field(description="发布状态；Catalog 当前只返回 published。")
+
+
+McpTransport = Literal["streamable_http", "sse"]
+McpAuthType = Literal["none", "api_key", "bearer_token", "basic", "authorization", "token"]
+
+
+class McpAuthIn(BaseModel):
+    type: McpAuthType = "none"
+    value: str | None = Field(default=None, min_length=1, max_length=16_384)
+
+    @model_validator(mode="after")
+    def require_value_for_authenticated_types(self) -> McpAuthIn:
+        if self.type != "none" and self.value is None:
+            raise ValueError("auth.value is required when auth.type is not none")
+        if self.type == "none" and self.value is not None:
+            raise ValueError("auth.value is only valid when auth.type is not none")
+        return self
+
+
+def _validate_mcp_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("url must be an absolute http or https URL")
+    return value
+
+
+class McpServerCreateIn(BaseModel):
+    server_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,119}$")
+    label: str = Field(min_length=1, max_length=160)
+    url: str = Field(min_length=1, max_length=4096)
+    transport: McpTransport = "streamable_http"
+    auth: McpAuthIn = Field(default_factory=McpAuthIn)
+    allowed_tools: list[str] | None = Field(default=None, max_length=256)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        return _validate_mcp_url(value)
+
+
+class McpServerUpdateIn(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=160)
+    url: str | None = Field(default=None, min_length=1, max_length=4096)
+    transport: McpTransport | None = None
+    auth: McpAuthIn | None = None
+    allowed_tools: list[str] | None = Field(default=None, max_length=256)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str | None) -> str | None:
+        return _validate_mcp_url(value) if value is not None else None
+
+
+class McpServerOut(BaseModel):
+    server_id: str
+    label: str
+    url: str | None = None
+    transport: McpTransport
+    auth_type: McpAuthType | None = None
+    allowed_tools: list[str] | None = None
+    credential_configured: bool = False
+
+
+class McpReloadOut(BaseModel):
+    refreshed_instances: list[str] = Field(default_factory=list)
+    failed_instances: list[str] = Field(default_factory=list)
+
+
+class McpMutationOut(BaseModel):
+    server: McpServerOut
+    reload: McpReloadOut
 
 
 class InstanceEnsure(BaseModel):

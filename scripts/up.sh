@@ -9,7 +9,6 @@ Usage: scripts/up.sh NAME [options]
 
 Options:
   --model NAME             LiteLLM model alias (default: coding-default)
-  --mcp-env-file PATH      Optional MCP_* credentials injected into sandbox
   --policy SLUG            Runner catalog policy (default: consumer-default)
   --mirror-mode MODE       auto, cn, or global (default: auto)
   --show-token             Print the bridge bearer token (unsafe in CI logs)
@@ -32,7 +31,6 @@ shift
 validate_name "$NAME"
 
 MODEL="coding-default"
-MCP_ENV_FILE=""
 POLICY="consumer-default"
 MIRROR_MODE_VALUE="${MIRROR_MODE:-auto}"
 SHOW_TOKEN=false
@@ -41,7 +39,6 @@ MEMORY="4Gi"
 while (($#)); do
   case "$1" in
     --model) MODEL="$2"; shift 2 ;;
-    --mcp-env-file) MCP_ENV_FILE="$2"; shift 2 ;;
     --policy) POLICY="$2"; shift 2 ;;
     --mirror-mode) MIRROR_MODE_VALUE="$2"; shift 2 ;;
     --show-token) SHOW_TOKEN=true; shift ;;
@@ -58,10 +55,6 @@ case "$MIRROR_MODE_VALUE" in
 esac
 
 require_litellm_env
-if [[ -n "$MCP_ENV_FILE" && ! -f "$MCP_ENV_FILE" ]]; then
-  echo "MCP environment file not found: $MCP_ENV_FILE" >&2
-  exit 2
-fi
 if ! jq -e --arg model "$MODEL" --arg policy "$POLICY" \
   '.policies[] | select(.slug == $policy and (.model_slugs | index($model)))' \
   "$PROJECT_DIR/config/runner-catalog.json" >/dev/null; then
@@ -142,21 +135,6 @@ KEY_REQUEST="$(jq -n --arg model "$MODEL" --arg key_alias "$KEY_ALIAS" --arg nam
 KEY_RESPONSE="$(litellm_admin POST /key/generate "$KEY_REQUEST")"
 LITELLM_KEY="$(jq -er '.key // .token' <<<"$KEY_RESPONSE")"
 
-MCP_ENV='{}'
-if [[ -n "$MCP_ENV_FILE" ]]; then
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ "$line" == *=* ]] || { echo "Invalid MCP environment line: $line" >&2; exit 2; }
-    key="${line%%=*}"
-    value="${line#*=}"
-    [[ "$key" =~ ^MCP_([A-Za-z0-9_]+)$ ]] || {
-      echo "Only MCP_* variables may be injected from --mcp-env-file." >&2
-      exit 2
-    }
-    MCP_ENV="$(jq --arg key "$key" --arg value "$value" '. + {($key): $value}' <<<"$MCP_ENV")"
-  done <"$MCP_ENV_FILE"
-fi
-
 BRIDGE_PROXY_TOKEN="$(openssl rand -hex 32)"
 BRIDGE_PROXY_TOKEN_HASH="h$(printf '%s' "$BRIDGE_PROXY_TOKEN" \
   | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
@@ -171,7 +149,7 @@ INTERNAL_ENV="$(jq -n \
     PI_WORKSPACE_ROOT: "/root/workspace"
   }
   + {PI_DEFAULT_MODEL: $model}')"
-ENV_JSON="$(jq -n --argjson mcp "$MCP_ENV" --argjson internal "$INTERNAL_ENV" '$mcp + $internal')"
+ENV_JSON="$INTERNAL_ENV"
 
 PAYLOAD="$(jq -n \
   --arg image "$BRIDGE_IMAGE" \

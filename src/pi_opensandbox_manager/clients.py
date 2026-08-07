@@ -209,8 +209,46 @@ class LiteLLMAdminClient(JsonClient):
                 "max_parallel_requests": policy["max_parallel_requests"],
                 "metadata": {"component": "pi-runner-manager"},
                 "key_type": "llm_api",
+                "object_permission": {
+                    "mcp_servers": policy["mcp_server_ids"] or ["no-mcp-servers"]
+                },
             },
         )
+
+    def list_mcp_servers(self) -> list[dict[str, Any]]:
+        body = self.json("GET", "/v1/mcp/server")
+        if not isinstance(body, list):
+            raise UpstreamProblem(502, "invalid_litellm_response", "MCP server list is invalid")
+        return [item for item in body if isinstance(item, dict)]
+
+    def ensure_mcp_servers_exist(self, server_ids: list[str]) -> None:
+        if not server_ids:
+            return
+        existing = {
+            str(item.get("server_id"))
+            for item in self.list_mcp_servers()
+            if item.get("server_id") is not None
+        }
+        missing = sorted(set(server_ids) - existing)
+        if missing:
+            raise UpstreamProblem(
+                422, "mcp_policy_invalid", f"LiteLLM MCP servers do not exist: {', '.join(missing)}"
+            )
+
+    def create_mcp_server(self, payload: dict[str, Any]) -> dict[str, Any]:
+        body = self.json("POST", "/v1/mcp/server", json=payload)
+        if not isinstance(body, dict):
+            raise UpstreamProblem(502, "invalid_litellm_response", "MCP server response is invalid")
+        return body
+
+    def update_mcp_server(self, payload: dict[str, Any]) -> dict[str, Any]:
+        body = self.json("PUT", "/v1/mcp/server", json=payload)
+        if not isinstance(body, dict):
+            raise UpstreamProblem(502, "invalid_litellm_response", "MCP server response is invalid")
+        return body
+
+    def delete_mcp_server(self, server_id: str) -> None:
+        self.request("DELETE", f"/v1/mcp/server/{server_id}")
 
     def delete_key(self, alias: str) -> None:
         self.json("POST", "/key/delete", json={"key_aliases": [alias]})
@@ -278,6 +316,12 @@ class BridgeClient(JsonClient):
 
     def abort(self, session_id: str) -> None:
         self.request("POST", f"/sessions/{session_id}/abort")
+
+    def reload_mcp_gateway(self) -> dict[str, Any]:
+        body = self.json("POST", "/mcp/reload")
+        if not isinstance(body, dict):
+            raise UpstreamProblem(502, "invalid_bridge_response", "MCP reload response is invalid")
+        return body
 
     def delete_session(self, session_id: str) -> None:
         self.request("DELETE", f"/sessions/{session_id}", params={"force": "true"})

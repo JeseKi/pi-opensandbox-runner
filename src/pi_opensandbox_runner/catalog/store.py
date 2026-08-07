@@ -5,17 +5,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
-from sqlalchemy import and_, create_engine, event, or_, select
+from sqlalchemy import and_, create_engine, event, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .files import inspect_session_file, utc_now
-from .mcp_store import McpServerStore
-from .models import Base, SessionMcpServerModel, SessionModel, SessionRecord, session_record
+from .models import Base, SessionModel, SessionRecord, session_record
 
 _Result = TypeVar("_Result")
 
 
-class Catalog(McpServerStore):
+class Catalog:
     def __init__(self, path: Path, pi_session_dir: Path):
         self.path, self.pi_session_dir = path, pi_session_dir
         self._lock = asyncio.Lock()
@@ -39,7 +38,13 @@ class Catalog(McpServerStore):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.pi_session_dir.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(Base.metadata.create_all, self.engine)
+        await asyncio.to_thread(self._drop_legacy_mcp_tables)
         await self.reconcile_files()
+
+    def _drop_legacy_mcp_tables(self) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(text("DROP TABLE IF EXISTS session_mcp_servers"))
+            connection.execute(text("DROP TABLE IF EXISTS mcp_servers"))
 
     async def _run(self, operation: Callable[[Session], _Result]) -> _Result:
         async with self._lock:
@@ -207,10 +212,6 @@ class Catalog(McpServerStore):
             if item is None:
                 return None
             result = session_record(item)
-            for binding in db.scalars(
-                select(SessionMcpServerModel).where(SessionMcpServerModel.session_id == session_id)
-            ):
-                db.delete(binding)
             db.delete(item)
             return result
 

@@ -29,6 +29,7 @@ from .event_routes import register_event_routes
 from .filesystem_routes import register_filesystem_routes
 from .instance_list_routes import register_instance_list_routes
 from .instance_routes import register_instance_routes
+from .mcp_routes import register_mcp_routes
 from .session_routes import register_session_routes
 from .terminal_routes import (
     cleanup_terminals,
@@ -221,6 +222,7 @@ def create_manager_app(
         service_principal,
     )
     register_admin_routes(app, db_control, admin_principal)
+    register_mcp_routes(app, db_control, resolved, cipher, admin_principal)
     return app
 
 

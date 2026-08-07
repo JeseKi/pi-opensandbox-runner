@@ -1,73 +1,53 @@
 # 外部 MCP
 
-> MCP 是 Pi Bridge 的底层能力。目前 Runner Manager 没有向 consumer 暴露 MCP 管理接口，
-> `agent-runner` 的 C 端产品也不提供自定义 MCP。本文仅用于 Bridge 开发和未来内部 Policy
-> 集成，不应指导业务系统绕过 Manager 直连 Bridge。
+MCP Server 由 Runner Manager 管理，并由 LiteLLM MCP Gateway 转发。Bridge 不再保存 Server、认证值或
+Session 绑定；每个 Pi 进程只连接 `http://litellm:4000/mcp/`，并携带该 Runner Instance 的 LiteLLM
+virtual key。
 
-Pi 通过内置 Extension 使用 MCP。当前支持远程 Streamable HTTP 与兼容 SSE；不支持 stdio、
-浏览器 OAuth、MCP resources、prompts 或 sampling。
+当前支持远程 Streamable HTTP 和 SSE Server，以及静态认证值；不支持 stdio、OAuth 或 AWS SigV4。
 
-MCP Server 可在同一容器中复用，再按 Session 绑定。工具会以
-`mcp_<server>_<tool>` 注册到 Pi，并和普通 Pi tool call 一样出现在 Session entries 与 SSE
-事件中。
+## 管理 Server
 
-## 配置认证环境
-
-认证值不经 API 保存。将 `MCP_*` 变量放入独立的 `.sandbox.env`，可从
-`.sandbox.env.example` 复制：
-
-```dotenv
-MCP_CONTEXT7_TOKEN=replace-me
-```
-
-重建 sandbox 时显式传入该文件：
+仅 Manager admin token 可以管理 Server。认证值仅转发给 LiteLLM，列表与响应只返回
+`credential_configured`，不会返回原始值。
 
 ```bash
-./scripts/up.sh alice --mcp-env-file .sandbox.env
-```
-
-## 创建和绑定 Server
-
-Header 模板只能引用 `MCP_*` 变量，因此不会读取 Bridge token 或模型供应商 token。GET 响应
-也只会返回模板，不会返回展开后的值。
-
-```bash
-MCP_SERVER_ID="$(curl -sS -X POST "${BRIDGE_URL}/v1/mcp/servers" \
-  -H "$AUTH" -H 'Content-Type: application/json' \
+curl -sS -X POST "${MANAGER_URL}/admin/v1/mcp/servers" \
+  -H "Authorization: Bearer ${MANAGER_ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
   -d '{
-    "name":"context7",
+    "server_id":"context7",
+    "label":"Context7",
     "transport":"streamable_http",
     "url":"https://mcp.context7.com/mcp",
-    "headers":{"Authorization":"Bearer ${MCP_CONTEXT7_TOKEN}"}
-  }' | jq -r .id)"
-
-curl -sS -X POST "${BRIDGE_URL}/v1/sessions" \
-  -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"with-context7\",\"mcp_server_ids\":[\"${MCP_SERVER_ID}\"]}" | jq
+    "auth":{"type":"bearer_token","value":"replace-me"}
+  }' | jq
 ```
 
-也可以绑定已存在的 Session。`PUT` 是完整替换，空数组表示解绑全部：
+`PUT /admin/v1/mcp/servers/{server_id}` 修改定义，`DELETE` 删除。更新或删除后，Manager 会让使用该
+Server 的 ready Instance 在下一条 Prompt 前滚动重启 Pi；正在生成的请求不会被中断。
 
-```bash
-curl -sS -X PUT "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/mcp-servers" \
-  -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "{\"server_ids\":[\"${MCP_SERVER_ID}\"]}" | jq
+## Policy 授权
+
+在 `config/runner-catalog.json` 的 Policy 中配置 `mcp_server_ids`。Manager 创建 LiteLLM virtual key
+时会把这些 Server ID 写入 `object_permission.mcp_servers`；未列出的 Server 即使存在于 Gateway 中也
+不可被该 Instance 调用。
+
+```json
+{
+  "slug": "consumer-default",
+  "mcp_server_ids": ["context7"]
+}
 ```
 
-## 更新行为和限制
+删除一个仍被活动 Instance 所用的 Server 会返回 `409 mcp_server_in_use`。若 Policy 引用了不存在的
+Server，Instance provisioning 会失败并返回 `mcp_policy_invalid`。
 
-修改绑定时 Pi 正在生成会返回 `409 session_streaming`；否则新配置在下一条 Prompt 前通过重启
-idle Pi 生效。更新 Server 定义不会中断运行中的 Pi，所有已绑定 Session 会在下一条非流式
-Prompt 前使用新快照。
+## 本地认证链路验证
 
-若缺少 Header 模板引用的环境变量，Prompt 返回 `422 mcp_environment_missing`。正在被绑定的
-Server 不能删除，需先解绑。
-
-默认 MCP URL 必须为 HTTPS。仅在可信内网开发服务确实使用 HTTP 时，才在 `.sandbox.env`
-设置 `MCP_ALLOW_INSECURE_HTTP=1` 后重建 sandbox。模型供应商域名不应配置给 Pi：模型请求只会
-经 Docker 私网中的 LiteLLM 转发。
-
-API 鉴权变量的准备方法见 [HTTP API](api.md)，域名放行方式见
-[网络与安全](network-security.md)。
+仓库提供了仅用于端到端验证的 Bearer-token MCP Server，定义在 `compose.dev.yaml`。执行
+`docker compose -f compose.yaml -f compose.dev.yaml --profile e2e up -d` 后，它位于
+`http://mcp-auth-test:8766/mcp`，认证值为 `test-mcp-secret`，并提供
+`authenticated_echo` 工具。该服务不对宿主机发布端口，也不应用于生产。
 
 返回[文档索引](README.md)。

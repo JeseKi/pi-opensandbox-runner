@@ -8,8 +8,8 @@ from typing import Any
 from ..catalog import Catalog, SessionRecord
 from ..config import Settings
 from ..journal import EventJournal
-from ..mcp import build_runtime_config, missing_environment
-from .errors import McpEnvironmentMissing, RpcError, SessionCapacityExceeded
+from ..mcp import build_runtime_config
+from .errors import RpcError, SessionCapacityExceeded
 from .process import PiRpcProcess, _model_catalog_fingerprint
 
 
@@ -30,6 +30,7 @@ class SessionSupervisor:
         self._active_request_ids: dict[str, str] = {}
         self._reaper_task: asyncio.Task[None] | None = None
         self._closing = False
+        self._mcp_generation = 0
 
     async def start(self) -> None:
         self._reaper_task = asyncio.create_task(self._reaper())
@@ -65,9 +66,9 @@ class SessionSupervisor:
             self.settings.model_catalog_path
         ):
             return True
-        servers = await self.catalog.get_session_mcp_servers(record.id)
-        assert servers is not None
-        return process.mcp_config_fingerprint != build_runtime_config(servers).fingerprint
+        return process.mcp_config_fingerprint != build_runtime_config(
+            enabled=self.settings.litellm_mcp_enabled
+        ).fingerprint or getattr(process, "mcp_generation", 0) != self._mcp_generation
 
     async def get_or_start(self, record: SessionRecord) -> PiRpcProcess:
         async with self._session_lock(record.id):
@@ -76,12 +77,7 @@ class SessionSupervisor:
                 return current
             await self._reserve_capacity()
             await self.catalog.set_runtime(record.id, status="starting", error=None)
-            servers = await self.catalog.get_session_mcp_servers(record.id)
-            assert servers is not None
-            mcp_config = build_runtime_config(servers)
-            if missing := missing_environment(mcp_config):
-                await self.catalog.set_runtime(record.id, status="stopped", error=None)
-                raise McpEnvironmentMissing(missing)
+            mcp_config = build_runtime_config(enabled=self.settings.litellm_mcp_enabled)
 
             async def on_event(event: dict[str, Any]) -> None:
                 request_id = self._active_request_ids.get(record.id)
@@ -112,6 +108,7 @@ class SessionSupervisor:
                 raise
             async with self._map_lock:
                 self.processes[record.id] = process
+            process.mcp_generation = self._mcp_generation
             state = await process.request({"type": "get_state"})
             raw_data = state.get("data")
             data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
@@ -128,6 +125,20 @@ class SessionSupervisor:
                 {"type": "process_started", "pid": process.process.pid},
             )
             return process
+
+    async def reload_mcp_gateway(self) -> dict[str, int]:
+        """Invalidate Gateway tools; idle processes restart now, streaming ones on next prompt."""
+        self._mcp_generation += 1
+        restarted = deferred = 0
+        for session_id, process in list(self.processes.items()):
+            if not process.alive:
+                continue
+            if process.is_streaming:
+                deferred += 1
+            else:
+                await self.stop(session_id, abort=False)
+                restarted += 1
+        return {"restarted": restarted, "deferred": deferred}
 
     async def _reserve_capacity(self) -> None:
         async with self._map_lock:

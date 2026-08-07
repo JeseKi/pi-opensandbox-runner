@@ -23,7 +23,7 @@ type McpTool = {
   inputSchema: Record<string, unknown>;
 };
 
-const ENV_REFERENCE = /\$\{(MCP_[A-Z0-9_]+)\}/g;
+const ENV_REFERENCE = /\$\{(LITELLM_VIRTUAL_KEY)\}/g;
 const MAX_OUTPUT_BYTES = 1_048_576;
 
 function expand(template: string): string {

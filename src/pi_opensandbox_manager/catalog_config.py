@@ -71,7 +71,18 @@ class CatalogPolicy(BaseModel):
     rpm_limit: int = Field(default=30, ge=1)
     tpm_limit: int = Field(default=1_000_000, ge=1)
     max_parallel_requests: int = Field(default=2, ge=1)
+    mcp_server_ids: list[str] = Field(default_factory=list)
     egress_domains: list[str] = Field(default_factory=list)
+
+    @field_validator("mcp_server_ids")
+    @classmethod
+    def normalize_mcp_server_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("mcp_server_ids must not contain duplicates")
+        for server_id in value:
+            if not re.fullmatch(SLUG_PATTERN, server_id):
+                raise ValueError(f"invalid MCP server id: {server_id}")
+        return sorted(value)
 
     @field_validator("model_slugs")
     @classmethod
@@ -225,6 +236,7 @@ def sync_catalog(db: Session, snapshot: CatalogSnapshot) -> bool:
                 rpm_limit=configured_policy.rpm_limit,
                 tpm_limit=configured_policy.tpm_limit,
                 max_parallel_requests=configured_policy.max_parallel_requests,
+                mcp_server_ids_json=json.dumps(configured_policy.mcp_server_ids),
                 egress_domains_json=json.dumps(configured_policy.egress_domains),
             )
         )
@@ -262,6 +274,7 @@ def _same_policy(
         json.loads(record.model_slugs_json) == configured.model_slugs
         and json.loads(record.model_revisions_json or "{}") == model_revisions
         and json.loads(record.egress_domains_json) == configured.egress_domains
+        and json.loads(record.mcp_server_ids_json) == configured.mcp_server_ids
         and all(
             getattr(record, field) == getattr(configured, field)
             for field in (

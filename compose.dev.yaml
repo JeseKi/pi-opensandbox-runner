@@ -6,3 +6,22 @@ services:
   litellm:
     ports:
       - "127.0.0.1:4000:4000"
+
+  mcp-auth-test:
+    image: python:3.13-alpine
+    profiles: ["e2e"]
+    restart: "no"
+    environment:
+      TEST_MCP_BEARER_TOKEN: test-mcp-secret
+    command: ["python", "/test/auth_mcp_server.py"]
+    volumes:
+      - ./tests/e2e/auth_mcp_server.py:/test/auth_mcp_server.py:ro
+    expose:
+      - "8766"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/healthz', timeout=2).close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    networks:
+      - pi-runner-control

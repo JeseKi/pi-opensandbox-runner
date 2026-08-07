@@ -23,7 +23,7 @@ class Settings:
     stop_grace_seconds: float = 10.0
     event_segment_bytes: int = 8 * 1024 * 1024
     event_segment_count: int = 8
-    mcp_allow_insecure_http: bool = False
+    litellm_mcp_enabled: bool = False
     trusted_proxy_host: str = "opensandbox"
     trusted_proxy_cache_seconds: float = 30.0
 
@@ -47,7 +47,7 @@ class Settings:
             idle_timeout_seconds=float(os.getenv("PI_IDLE_TIMEOUT_SECONDS", "300")),
             rpc_timeout_seconds=float(os.getenv("PI_RPC_TIMEOUT_SECONDS", "30")),
             stop_grace_seconds=float(os.getenv("PI_STOP_GRACE_SECONDS", "10")),
-            mcp_allow_insecure_http=os.getenv("MCP_ALLOW_INSECURE_HTTP", "").lower()
+            litellm_mcp_enabled=os.getenv("PI_LITELLM_MCP_ENABLED", "").lower()
             in {"1", "true", "yes"},
             trusted_proxy_host=os.getenv("BRIDGE_TRUSTED_PROXY_HOST", "opensandbox"),
             trusted_proxy_cache_seconds=float(

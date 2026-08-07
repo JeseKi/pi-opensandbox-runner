@@ -141,7 +141,7 @@ uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" stop user-1
 - [运行与维护](docs/operations.md)
 - [网络与安全](docs/network-security.md)
 - [本地开发与集成](docs/development.md)
-- [Bridge MCP 能力](docs/mcp.md)
+- [外部 MCP（Manager + LiteLLM Gateway）](docs/mcp.md)
 
 Manager Swagger 位于 `http://127.0.0.1:8090/v1/docs`。Bridge Swagger 只用于底层调试，不应
 作为业务系统接入入口。

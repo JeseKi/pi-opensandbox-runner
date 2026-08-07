@@ -84,6 +84,7 @@ class RunnerPolicy(Base):
     rpm_limit: Mapped[int] = mapped_column(Integer, default=30)
     tpm_limit: Mapped[int] = mapped_column(Integer, default=1_000_000)
     max_parallel_requests: Mapped[int] = mapped_column(Integer, default=2)
+    mcp_server_ids_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     egress_domains_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

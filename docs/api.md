@@ -240,6 +240,6 @@ curl -sS -X DELETE "${BRIDGE_URL}/v1/sessions/${SESSION_ID}/system-prompt" \
   -H "$AUTH" | jq
 ```
 
-MCP Server 管理与 Session 绑定接口见[外部 MCP](mcp.md)。
+MCP Server 仅可通过 Manager admin API 管理；Gateway 授权与 Policy 配置见[外部 MCP](mcp.md)。
 
 返回[文档索引](README.md)。

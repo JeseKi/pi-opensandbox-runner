@@ -22,7 +22,6 @@ from ..rpc import SessionSupervisor
 from .command_routes import register_command_routes
 from .context import BridgeContext
 from .file_routes import register_file_routes
-from .mcp_routes import register_mcp_routes
 from .model_routes import register_model_routes
 from .problems import ApiProblem, problem_response
 from .session_routes import register_session_routes
@@ -113,7 +112,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             {"name": "Health", "description": "Bridge 存活与就绪状态。"},
             {"name": "Sessions", "description": "Pi Session 的创建、配置、历史与 prompt。"},
             {"name": "Session runtime", "description": "运行中的 Pi 控制、上下文和 SSE 事件。"},
-            {"name": "MCP", "description": "远程 MCP Server 注册表与 Session 绑定。"},
             {"name": "Models", "description": "Pi LiteLLM 模型目录管理。"},
             {"name": "Files", "description": "通过 OpenSandbox Execd 浏览和修改容器文件。"},
             {"name": "Workspace Files", "description": "受限于 /root/workspace 的用户文件管理。"},
@@ -202,7 +200,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     router = APIRouter(prefix="/v1", dependencies=[Depends(document_external_proxy_auth)])
     session_router = APIRouter(tags=["Sessions"])
     runtime_router = APIRouter(tags=["Session runtime"])
-    mcp_router = APIRouter(tags=["MCP"])
     model_router = APIRouter(tags=["Models"])
     file_router = APIRouter(tags=["Files"])
     workspace_file_router = APIRouter(tags=["Workspace Files"])
@@ -211,7 +208,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     terminal_websocket_router = APIRouter(prefix="/v1")
     register_session_routes(session_router, ctx)
     register_session_runtime_routes(runtime_router, ctx)
-    register_mcp_routes(mcp_router, ctx)
     register_model_routes(model_router, ctx)
     register_file_routes(file_router, ctx)
     register_workspace_file_routes(workspace_file_router, ctx)
@@ -224,7 +220,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     router.include_router(session_router)
     router.include_router(runtime_router)
-    router.include_router(mcp_router)
     router.include_router(model_router)
     router.include_router(file_router)
     router.include_router(workspace_file_router)

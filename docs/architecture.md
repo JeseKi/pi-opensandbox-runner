@@ -8,9 +8,9 @@ Pi OpenSandbox Runner 是内部 Runner Manager，不是 C 端产品服务。
 | --- | --- | --- |
 | `agent-runner` | 用户、鉴权、浅层管理、产品 Session/Turn、队列和审计 | OpenSandbox、LiteLLM master key、Bridge 凭据 |
 | Runner Manager | Runner Policy、Instance、Operation、Session/Turn 映射、sandbox 和 virtual key | C 端用户体系和产品 UI |
-| Pi Bridge | Pi RPC、对话历史、事件、文件、命令和底层 MCP | consumer 鉴权、跨 sandbox 调度 |
+| Pi Bridge | Pi RPC、对话历史、事件、文件、命令和 LiteLLM MCP Gateway 接入 | consumer 鉴权、MCP Server/认证值管理、跨 sandbox 调度 |
 | OpenSandbox | 容器、endpoint、持久卷、execd、网络策略 | 产品 Session/Turn |
-| LiteLLM | 供应商路由、virtual key、预算和限流 | Runner 生命周期 |
+| LiteLLM | 供应商路由、virtual key、预算、限流和 MCP Gateway | Runner 生命周期 |
 
 `agent-runner` 只能持有 Manager service token。OpenSandbox API key、LiteLLM master key、
 Bridge token 和 virtual key 都属于 Manager 信任域。
@@ -22,13 +22,13 @@ flowchart TB
     ar[agent-runner] -->|Session / Turn| manager[Runner Manager API]
     manager --> db[(Manager SQLite)]
     manager -->|provision / stop| os[OpenSandbox API]
-    manager -->|issue / revoke key| llm[LiteLLM Admin API]
+    manager -->|issue / revoke key; manage MCP servers| llm[LiteLLM Admin API]
     os --> sandbox[每用户持久 sandbox]
     manager -->|Bridge proxy token| bridge[Pi Bridge]
     bridge --> pi[Pi RPC]
     bridge --> state[(Bridge SQLite / JSONL / NDJSON)]
     bridge --> execd[OpenSandbox Execd]
-    pi -->|LiteLLM virtual key| llm
+    pi -->|model requests / MCP virtual key| llm
 ```
 
 Manager 默认使用 SQLite，启用 WAL、foreign keys 和 busy timeout，并通过 Alembic 管理 schema。
@@ -136,9 +136,10 @@ Turn ID 同时作为 Manager 幂等键和 Bridge `Idempotency-Key`。相同 ID�
 
 ## Bridge 持久化
 
-Bridge 继续使用自己的 SQLite 保存逻辑 Session/MCP 绑定，Pi JSONL 保存真实对话历史，分段
-NDJSON 保存事件游标。它们位于 `/root/.pi` 持久卷；工作区位于 `/root/workspace` 持久卷。
-这些是数据面实现细节，上层 consumer 不应依赖其文件布局。
+Bridge 使用自己的 SQLite 保存逻辑 Session；Pi JSONL 保存真实对话历史，分段 NDJSON 保存事件游标。
+MCP Server、认证值和授权由 Manager 与 LiteLLM 的数据库管理，Bridge 不保存 Session MCP 绑定。
+Bridge 的持久化数据位于 `/root/.pi` 卷；工作区位于 `/root/workspace` 卷。这些都是数据面实现
+细节，上层 consumer 不应依赖其文件布局。
 
 安全边界见[网络与安全](network-security.md)，协议见
 [Manager API](manager-api.md)和[Bridge API](api.md)。

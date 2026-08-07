@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Header, Query, Response
 
-from ..rpc import McpEnvironmentMissing, RpcError, RpcProcessExited, SessionCapacityExceeded
+from ..rpc import RpcError, RpcProcessExited, SessionCapacityExceeded
 from ..schemas import (
     ModelCatalogOut,
     PromptAccepted,
@@ -76,15 +76,6 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
             system_prompt=payload.system_prompt,
             system_prompt_mode=payload.system_prompt_mode,
         )
-        if payload.mcp_server_ids:
-            try:
-                bound = await ctx.catalog.set_session_mcp_servers(record.id, payload.mcp_server_ids)
-            except KeyError as exc:
-                await ctx.catalog.delete(record.id)
-                raise ApiProblem(
-                    422, "mcp_server_not_found", "one or more MCP Servers do not exist"
-                ) from exc
-            assert bound is not None
         return await session_out(record, ctx.supervisor)
 
     @router.get("/models", response_model=ModelCatalogOut, summary="列出可用 LiteLLM 模型")
@@ -224,7 +215,6 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
             except OSError as exc:
                 raise ApiProblem(500, "session_delete_failed", str(exc)) from exc
         await ctx.journal.delete(session_id)
-        (ctx.settings.state_root / "mcp" / f"{session_id}.json").unlink(missing_ok=True)
         return Response(status_code=204)
 
     @router.post(
@@ -325,13 +315,6 @@ def register_session_routes(router: APIRouter, ctx: BridgeContext) -> None:
                 raise
             except SessionCapacityExceeded as exc:
                 raise ApiProblem(429, "session_capacity_exceeded", str(exc)) from exc
-            except McpEnvironmentMissing as exc:
-                raise ApiProblem(
-                    422,
-                    "mcp_environment_missing",
-                    str(exc),
-                    extra={"missing": exc.names},
-                ) from exc
             except (RpcError, RpcProcessExited, TimeoutError, OSError) as exc:
                 raise ApiProblem(503, "pi_unavailable", str(exc)) from exc
         await ctx.journal.append(

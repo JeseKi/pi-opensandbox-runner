@@ -47,6 +47,7 @@ class PiRpcProcess:
         self.timeout = timeout
         self.system_prompt_config = system_prompt_config
         self.mcp_config_fingerprint = mcp_config_fingerprint
+        self.mcp_generation = 0
         self.model_catalog_fingerprint = model_catalog_fingerprint
         self.on_event = on_event
         self.on_exit = on_exit

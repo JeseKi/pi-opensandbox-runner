@@ -17,6 +17,14 @@ from .session_state import get_entries
 
 def register_session_runtime_routes(router: APIRouter, ctx: BridgeContext) -> None:
     @router.post(
+        "/mcp/reload",
+        summary="刷新 LiteLLM MCP Gateway 工具",
+        description="仅供 Manager 在 LiteLLM MCP Server 变更后调用。",
+    )
+    async def reload_mcp_gateway() -> dict[str, int]:
+        return await ctx.supervisor.reload_mcp_gateway()
+
+    @router.post(
         "/sessions/{session_id}/abort",
         status_code=202,
         summary="中止当前 Pi turn",

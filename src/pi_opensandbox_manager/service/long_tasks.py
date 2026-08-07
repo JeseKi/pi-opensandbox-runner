@@ -160,6 +160,7 @@ class OperationExecutor:
                     "rpm_limit": policy.rpm_limit,
                     "tpm_limit": policy.tpm_limit,
                     "max_parallel_requests": policy.max_parallel_requests,
+                    "mcp_server_ids": json.loads(policy.mcp_server_ids_json),
                     "egress_domains": json.loads(policy.egress_domains_json),
                 },
                 models=[
@@ -191,6 +192,7 @@ class OperationExecutor:
         self._phase(operation_id, "issuing_model_key")
         litellm = LiteLLMAdminClient(self.settings)
         try:
+            litellm.ensure_mcp_servers_exist(item.policy["mcp_server_ids"])
             litellm.ensure_key(
                 alias=item.litellm_key_alias,
                 key=item.litellm_key,
@@ -399,6 +401,7 @@ class OperationExecutor:
                 "PI_WORKSPACE_ROOT": "/root/workspace",
                 "PI_DEFAULT_MODEL": item.policy["default_model_slug"],
                 "PI_MAX_ACTIVE_SESSIONS": str(item.policy["max_active_sessions"]),
+                "PI_LITELLM_MCP_ENABLED": "1" if item.policy["mcp_server_ids"] else "0",
             },
             "networkPolicy": {
                 "defaultAction": "deny",

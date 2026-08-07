@@ -27,6 +27,7 @@
       "rpm_limit": 30,
       "tpm_limit": 1000000,
       "max_parallel_requests": 2,
+      "mcp_server_ids": [],
       "egress_domains": [
         "github.com",
         "api.github.com",
