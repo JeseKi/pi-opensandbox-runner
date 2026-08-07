@@ -56,9 +56,18 @@ def settings(tmp_path: Path) -> ManagerSettings:
 
 
 def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
-    configured = settings(tmp_path)
+    docs_site = tmp_path / "site"
+    docs_site.mkdir()
+    (docs_site / "index.html").write_text("<h1>Runner documentation</h1>")
+    configured = replace(settings(tmp_path), docs_site_dir=docs_site)
     app = create_manager_app(configured)
     with TestClient(app) as client:
+        docs_redirect = client.get("/mkdocs/docs", follow_redirects=False)
+        assert docs_redirect.status_code == 307
+        documentation = client.get("/mkdocs/docs/")
+        assert documentation.status_code == 200
+        assert "Runner documentation" in documentation.text
+
         docs = client.get("/v1/docs")
         assert docs.status_code == 200
         assert "/assets/manager-logo.svg" in docs.text

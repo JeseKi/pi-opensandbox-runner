@@ -136,10 +136,19 @@ def create_manager_app(
     )
     static_directory = Path(__file__).resolve().parent.parent / "static"
     app.mount("/assets", StaticFiles(directory=static_directory), name="assets")
+    if resolved.docs_site_dir.is_dir():
+        app.mount(
+            "/mkdocs/docs",
+            StaticFiles(directory=resolved.docs_site_dir, html=True),
+            name="mkdocs-docs",
+        )
+    else:
+        logger.warning("documentation site is unavailable: %s", resolved.docs_site_dir)
     app.state.database = db_control
     app.state.worker_alive = False
     app.state.catalog_hash = None
     app.state.catalog_error = None
+    app.state.docs_site_available = resolved.docs_site_dir.is_dir()
 
     @app.middleware("http")
     async def request_id(request: Request, call_next: Any) -> Response:

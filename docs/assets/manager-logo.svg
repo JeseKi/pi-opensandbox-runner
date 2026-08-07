@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Pi Runner Manager</title>
+  <rect width="128" height="128" rx="28" fill="#0B1220"/>
+  <path d="M64 18 103 41v46l-39 23-39-23V41z" fill="none" stroke="#22D3EE" stroke-linejoin="round" stroke-width="10"/>
+  <g fill="#22D3EE">
+    <circle cx="64" cy="18" r="7"/>
+    <circle cx="103" cy="41" r="7"/>
+    <circle cx="103" cy="87" r="7"/>
+    <circle cx="64" cy="110" r="7"/>
+    <circle cx="25" cy="87" r="7"/>
+    <circle cx="25" cy="41" r="7"/>
+  </g>
+  <path d="M47 50h34v9H70v27a8 8 0 1 1-8 0V59H47z" fill="#FBBF24"/>
+  <circle cx="47" cy="54.5" r="8.5" fill="#FBBF24"/>
+  <circle cx="81" cy="54.5" r="8.5" fill="#FBBF24"/>
+</svg>

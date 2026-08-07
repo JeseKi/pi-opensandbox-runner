@@ -1,3 +1,13 @@
+FROM python:3.13.5-slim-bookworm AS docs-builder
+
+WORKDIR /build
+RUN python -m pip install --no-cache-dir "uv==0.8.4"
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --only-group docs --no-install-project
+COPY mkdocs.yml ./mkdocs.yml
+COPY docs ./docs
+RUN uv run --no-sync mkdocs build --strict --site-dir /site
+
 FROM python:3.13.5-slim-bookworm
 
 ARG MIRROR_MODE=auto
@@ -41,6 +51,7 @@ RUN uv export \
     && rm /tmp/requirements.txt
 COPY src ./src
 COPY config/runner-catalog.toml ./config/runner-catalog.toml
+COPY --from=docs-builder /site ./site
 RUN uv pip install \
         --python .venv/bin/python \
         --no-deps \

@@ -19,3 +19,4 @@ wheels/
 extensions/pi-runner-mcp/node_modules/
 tmp/
 data/
+site/

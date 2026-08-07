@@ -30,6 +30,7 @@ class ManagerSettings:
     terminal_max_lifetime_seconds: int = 28_800
     max_terminals_per_instance: int = 4
     terminal_cleanup_seconds: float = 60.0
+    docs_site_dir: Path = Path("site")
     host: str = "0.0.0.0"
     port: int = 8090
 
@@ -85,6 +86,7 @@ class ManagerSettings:
             terminal_cleanup_seconds=float(
                 os.getenv("RUNNER_MANAGER_TERMINAL_CLEANUP_SECONDS", "60")
             ),
+            docs_site_dir=Path(os.getenv("RUNNER_MANAGER_DOCS_SITE_DIR", "site")),
             host=os.getenv("RUNNER_MANAGER_HOST", "0.0.0.0"),
             port=int(os.getenv("RUNNER_MANAGER_PORT", "8090")),
         )

@@ -26,7 +26,7 @@ flowchart LR
 - **LiteLLM** 保存供应商密钥，并为每个 Runner Instance 签发受模型、预算和速率限制的 key。
 - **Manager SQLite** 保存控制面状态；LiteLLM 自己仍使用 PostgreSQL。
 
-更完整的职责和实体关系见[架构设计](docs/architecture.md)。
+更完整的职责和实体关系见[架构总览](docs/architecture/index.md)。
 
 ## 快速启动 Manager
 
@@ -113,9 +113,9 @@ RUNNER_DEFAULT_POLICY_SLUG=consumer-default
 `http://manager:8090`；跨 Compose 项目时必须显式连接共享网络并配置可解析的服务名。
 
 实例创建是异步操作。调用方先确保 Instance，轮询 Operation 到终态，再创建 Session 和提交
-Turn。完整请求示例、幂等语义和错误格式见 [Manager API](docs/manager-api.md)。
+Turn。完整请求示例、幂等语义和错误格式见 [API 概览](docs/api/index.md)。
 外部产品需要提供 sandbox 交互终端时，可接入 Manager 的一次性票据 WebSocket，详见
-[WebTerminal API](docs/web-terminal.md)；浏览器不需要也不应持有 Manager service token。
+[Web Terminal API](docs/api/web-terminal.md)；浏览器不需要也不应持有 Manager service token。
 
 ## 常用非破坏性运维入口
 
@@ -127,21 +127,22 @@ uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" stop user-1
 
 `stop` 和当前的 `destroy` 都会删除 sandbox 并吊销 LiteLLM key，但保留命名持久卷。
 持久卷的最终回收需要单独的卷管理流程。完整命令、参数、退出状态和错误处理见
-[Manager CLI](docs/cli.md)，备份、恢复、策略和故障排查见
-[运行与维护](docs/operations.md)。
+[Manager CLI](docs/cli/index.md)，备份、恢复、策略和故障排查见
+[Runner 日常运维](docs/operations/index.md)。
 
 ## 文档
 
-- [文档索引](docs/README.md)
-- [架构设计](docs/architecture.md)
-- [Manager API](docs/manager-api.md)
-- [WebTerminal API 与前端示例](docs/web-terminal.md)
-- [Manager CLI](docs/cli.md)
-- [Bridge API（内部数据面）](docs/api.md)
-- [运行与维护](docs/operations.md)
-- [网络与安全](docs/network-security.md)
-- [本地开发与集成](docs/development.md)
-- [外部 MCP（Manager + LiteLLM Gateway）](docs/mcp.md)
+- [文档首页](docs/index.md)
+- [快速开始](docs/getting-started/index.md)
+- [架构总览](docs/architecture/index.md)
+- [部署与配置](docs/deployment/requirements.md)
+- [Manager API](docs/api/index.md)
+- [Manager CLI](docs/cli/index.md)
+- [LiteLLM](docs/litellm/index.md)
+- [安全与运维](docs/operations/index.md)
+- [开发者指南](docs/development/index.md)
+
+Manager 启动后，完整文档站位于 `http://127.0.0.1:8090/mkdocs/docs/`。
 
 Manager Swagger 位于 `http://127.0.0.1:8090/v1/docs`。Bridge Swagger 只用于底层调试，不应
 作为业务系统接入入口。

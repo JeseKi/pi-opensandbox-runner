@@ -1,0 +1,156 @@
+site_name: Pi OpenSandbox Runner
+site_description: Pi OpenSandbox Runner 架构、部署、使用和接口文档
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+theme:
+  name: material
+  language: zh
+  logo: assets/manager-logo.svg
+  favicon: assets/manager-logo.svg
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.tabs.link
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+extra_javascript:
+  - assets/javascripts/runtime-values.js
+
+nav:
+  - 首页: index.md
+  - 快速开始:
+      - 快速开始: getting-started/index.md
+      - 启动 Pi OpenSandbox Runner: getting-started/start.md
+      - 创建 Runner Instance: getting-started/create-instance.md
+      - 创建 Session: getting-started/create-session.md
+      - 与 Agent 交互: getting-started/interact-with-agent.md
+      - 读取 Agent 事件: getting-started/read-events.md
+      - 取消 Agent Turn: getting-started/cancel-turn.md
+  - 架构:
+      - 架构总览: architecture/index.md
+      - 组件与职责: architecture/components.md
+      - 控制面与数据面: architecture/control-and-data-plane.md
+      - Runner Instance 生命周期: architecture/instance-lifecycle.md
+      - Instance 创建与恢复链路: architecture/provisioning.md
+      - Agent 交互完整链路: architecture/agent-interaction.md
+      - 消息与事件流转: architecture/events.md
+      - 数据存储与持久化: architecture/persistence.md
+      - 网络与信任边界: architecture/trust-boundaries.md
+  - 部署与配置:
+      - 部署要求: deployment/requirements.md
+      - Docker Compose 部署: deployment/docker-compose.md
+      - Manager 配置项: deployment/manager-configuration.md
+      - Bridge 配置项: deployment/bridge-configuration.md
+      - OpenSandbox 配置: deployment/opensandbox.md
+      - Model Catalog 配置: deployment/model-catalog.md
+      - Runner Policy 配置: deployment/runner-policy.md
+      - 生产环境部署: deployment/production.md
+      - 健康检查: deployment/health-checks.md
+      - 数据备份与恢复: deployment/backup-and-restore.md
+      - 升级与迁移: deployment/upgrades.md
+      - 部署故障排查: deployment/troubleshooting.md
+  - CLI:
+      - CLI 概览: cli/index.md
+      - Model 与 Policy 命令: cli/catalog.md
+      - Runner Instance 命令: cli/instances.md
+      - CLI 输出与退出状态: cli/output.md
+      - CLI 故障排查: cli/troubleshooting.md
+  - API:
+      - API 概览: api/index.md
+      - API 鉴权: api/authentication.md
+      - Model 与 Policy API: api/catalog.md
+      - Runner Instance API: api/instances.md
+      - Operation API: api/operations.md
+      - Session API: api/sessions.md
+      - Turn API: api/turns.md
+      - Event API: api/events.md
+      - Workspace API: api/workspace.md
+      - Command API: api/commands.md
+      - Web Terminal API: api/web-terminal.md
+      - MCP 管理 API: api/mcp.md
+      - Bridge 内部 API: api/bridge.md
+      - API 分页与游标: api/pagination.md
+      - API 幂等性: api/idempotency.md
+      - API 错误处理: api/errors.md
+  - LiteLLM:
+      - LiteLLM 在 Runner 中的作用: litellm/index.md
+      - 模型请求链路: litellm/model-request.md
+      - Model Catalog 与 LiteLLM 路由: litellm/model-routing.md
+      - Virtual Key 生命周期: litellm/virtual-key.md
+      - 预算、限流与并发控制: litellm/limits.md
+      - Provider 凭据管理: litellm/provider-credentials.md
+      - LiteLLM MCP Gateway: litellm/mcp-gateway.md
+      - LiteLLM 对 Agent 的影响: litellm/agent-impact.md
+      - LiteLLM 故障传播与排查: litellm/troubleshooting.md
+  - 安全与运维:
+      - 凭据与 Token: security/credentials.md
+      - Sandbox 网络隔离: security/network-isolation.md
+      - Egress Policy: security/egress-policy.md
+      - 文件系统安全: security/filesystem.md
+      - Runner 日常运维: operations/index.md
+      - Instance 停止与销毁: operations/instance-removal.md
+      - 持久卷回收: operations/volume-reclamation.md
+      - 常见问题: operations/faq.md
+  - 开发者指南:
+      - 本地开发: development/index.md
+      - 项目结构: development/project-layout.md
+      - 运行测试: development/testing.md
+      - 调试 Manager: development/debug-manager.md
+      - 调试 Bridge: development/debug-bridge.md
+      - 集成 Pi: development/pi.md
+      - 集成 OpenSandbox: development/opensandbox.md
+      - 集成 LiteLLM: development/litellm.md
+      - 扩展与贡献指南: development/contributing.md
