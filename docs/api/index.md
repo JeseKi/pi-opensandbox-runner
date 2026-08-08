@@ -3,7 +3,7 @@
 Runner Manager API 是上层内部 consumer 的稳定接入边界。
 
 - Base URL：`__MANAGER_ORIGIN__`
-- Swagger：`/v1/docs`
+- API Reference：`/v1/docs`
 - OpenAPI：`/v1/openapi.json`
 - 协议版本响应头：`Runner-Protocol-Version: 1`
 - 请求追踪响应头：`X-Request-ID`

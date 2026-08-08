@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -198,11 +197,36 @@ def create_manager_app(
         return {"status": "ok"}
 
     @app.get("/v1/docs", include_in_schema=False)
-    async def swagger_ui() -> HTMLResponse:
-        return get_swagger_ui_html(
-            openapi_url="/v1/openapi.json",
-            title=f"{app.title} - Swagger UI",
-            swagger_favicon_url="/assets/manager-logo.svg",
+    async def scalar_api_reference() -> HTMLResponse:
+        return HTMLResponse(
+            """<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pi Runner Manager - API Reference</title>
+    <link rel="icon" href="/assets/manager-logo.svg">
+    <style>html, body, #manager-api-reference { height: 100%; margin: 0; }</style>
+  </head>
+  <body>
+    <div id="manager-api-reference"></div>
+    <noscript>API Reference 需要启用 JavaScript。OpenAPI: /v1/openapi.json</noscript>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.64.1/dist/browser/standalone.js"
+      integrity="sha384-yNQdqLDpE2fst+aUqSHXcquVibo90vCkT+zBMLgYfCejLv85GXAR3tFg9lXDUJAd"
+      crossorigin="anonymous"
+    ></script>
+    <script>
+      Scalar.createApiReference("#manager-api-reference", {
+        url: "/v1/openapi.json",
+        layout: "modern",
+        theme: "purple",
+        telemetry: false,
+        withDefaultFonts: false,
+      });
+    </script>
+  </body>
+</html>"""
         )
 
     @app.get("/readyz", include_in_schema=False)

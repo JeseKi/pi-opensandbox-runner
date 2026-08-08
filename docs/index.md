@@ -42,7 +42,7 @@ Sandbox，管理 Session 与 Turn，并通过 LiteLLM 统一模型路由、预�
 ## 文档入口
 
 - [文档站](index.md)
-- [Manager Swagger](/v1/docs)
+- [Manager API Reference](/v1/docs)
 - [Manager OpenAPI](/v1/openapi.json)
 - Manager 健康检查：[存活状态](/healthz)和[就绪状态](/readyz)
 

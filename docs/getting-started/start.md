@@ -71,6 +71,6 @@ curl -fsS __MANAGER_ORIGIN__/readyz
 成功后可访问：
 
 - 使用文档：`__MANAGER_ORIGIN__/mkdocs/docs/`
-- Swagger：`__MANAGER_ORIGIN__/v1/docs`
+- API Reference：`__MANAGER_ORIGIN__/v1/docs`
 
 下一步：[创建 Runner Instance](create-instance.md)。

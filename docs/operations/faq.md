@@ -16,7 +16,7 @@ Manager ready 不实时检查 LiteLLM、provider 或 virtual key。检查 Turn�
 
 不是。它只是初始工作目录。
 
-## 为什么文档站和 Swagger 使用两个地址？
+## 为什么文档站和 API Reference 使用两个地址？
 
 `/mkdocs/docs` 是面向使用者的叙述式文档，`/v1/docs` 是由 OpenAPI 生成的接口 schema 与调试页。
 

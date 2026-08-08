@@ -70,6 +70,15 @@ def test_manager_catalog_and_openapi(tmp_path: Path) -> None:
 
         docs = client.get("/v1/docs")
         assert docs.status_code == 200
+        assert 'id="manager-api-reference"' in docs.text
+        assert 'Scalar.createApiReference("#manager-api-reference"' in docs.text
+        assert 'url: "/v1/openapi.json"' in docs.text
+        assert "telemetry: false" in docs.text
+        assert "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.64.1/" in docs.text
+        assert (
+            "integrity=\"sha384-yNQdqLDpE2fst+aUqSHXcquVibo90vCkT+zBMLgYfCejLv85GXAR3tFg9lXDUJAd\""
+            in docs.text
+        )
         assert "/assets/manager-logo.svg" in docs.text
         logo = client.get("/assets/manager-logo.svg")
         assert logo.status_code == 200

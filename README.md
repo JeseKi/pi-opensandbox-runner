@@ -111,8 +111,8 @@ uv run pi-runner-manager-cli --token "$MANAGER_SERVICE_TOKEN" stop user-1
 
 Manager 启动后，完整文档站位于 `http://127.0.0.1:8090/mkdocs/docs/`。
 
-Manager Swagger 位于 `http://127.0.0.1:8090/v1/docs`。Bridge Swagger 只用于底层调试，不应
-作为业务系统接入入口。
+Manager API Reference 位于 `http://127.0.0.1:8090/v1/docs`。Bridge Swagger 只用于底层调试，
+不应作为业务系统接入入口。
 
 ## 本地检查
 
