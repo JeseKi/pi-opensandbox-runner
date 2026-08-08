@@ -10,3 +10,90 @@
 .md-typeset code {
   word-break: normal;
 }
+
+/* Mermaid defaults to its intrinsic SVG size, which makes wide flowcharts
+   needlessly small in the documentation column. */
+.md-typeset .mermaid {
+  box-sizing: border-box;
+  cursor: zoom-in;
+  margin: 1.5em 0;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0.5rem;
+}
+
+.md-typeset .mermaid svg {
+  display: block;
+  height: auto !important;
+  max-width: none !important;
+  min-width: 100%;
+  width: 100% !important;
+}
+
+.mermaid-zoom-overlay {
+  align-items: center;
+  background: rgb(15 23 42 / 88%);
+  box-sizing: border-box;
+  cursor: zoom-out;
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 3rem;
+  position: fixed;
+  z-index: 1000;
+}
+
+.mermaid-zoom-dialog {
+  background: var(--md-default-bg-color);
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+  box-shadow: var(--md-shadow-z3);
+  cursor: default;
+  max-height: 100%;
+  width: min(90vw, 96rem);
+  overflow: auto;
+  padding: 3rem 1rem 1rem;
+  position: relative;
+}
+
+.mermaid-zoom-dialog > svg {
+  display: block;
+  height: auto !important;
+  max-width: none !important;
+  min-width: 72rem;
+  width: 100% !important;
+}
+
+.mermaid-zoom-close {
+  align-items: center;
+  background: var(--md-primary-fg-color);
+  border: 0;
+  border-radius: 50%;
+  color: var(--md-primary-bg-color);
+  cursor: pointer;
+  display: flex;
+  font-size: 1.4rem;
+  height: 2rem;
+  justify-content: center;
+  line-height: 1;
+  position: absolute;
+  right: 0.75rem;
+  top: 0.5rem;
+  width: 2rem;
+}
+
+.mermaid-zoom-close:focus-visible {
+  outline: 0.15rem solid var(--md-accent-fg-color);
+  outline-offset: 0.15rem;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .mermaid-zoom-overlay {
+    padding: 1rem;
+  }
+
+  .mermaid-zoom-dialog {
+    padding: 3rem 0.5rem 0.5rem;
+    width: 100%;
+  }
+}
