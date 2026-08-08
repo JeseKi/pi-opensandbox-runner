@@ -1,9 +1,9 @@
 # OpenSandbox 配置
 
-运行以下命令生成 `.runtime/opensandbox.toml` 和对应 API key：
+`make init-config` 会生成 `.runtime/opensandbox.toml` 和对应 API key，并写入 `.manager.env`：
 
 ```bash
-bash -c 'source scripts/lib.sh; ensure_server_config'
+make init-config
 ```
 
 生成配置的关键约束：

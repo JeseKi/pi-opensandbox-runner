@@ -15,5 +15,6 @@
 
 ## 安全准备
 
-分别生成 OpenSandbox API key、LiteLLM master key、Manager Fernet 加密 key、service token 和
-admin token。service/admin token 必须不同，所有密钥文件权限应为 `0600`。
+运行 `make init-config` 会生成 OpenSandbox API key、LiteLLM master key、Manager Fernet 加密 key、
+service token 和 admin token，并将密钥文件权限设为 `0600`。service/admin token 必须不同；初始化命令
+会对此进行检查。随后只需在 `.litellm.env` 填写至少一个模型供应商的 API key。

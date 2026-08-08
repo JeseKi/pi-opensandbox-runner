@@ -32,48 +32,15 @@ flowchart LR
 
 要求：Linux Docker、Docker Compose、`bash`、`jq`、`openssl` 和 `uv`。
 
-先准备 LiteLLM 环境：
+先初始化本地配置：
 
 ```bash
-cp .litellm.env.example .litellm.env
-chmod 600 .litellm.env
+make init-config
 ```
 
-填写供应商密钥和 `LITELLM_MASTER_KEY`。随后生成 OpenSandbox 配置：
-
-```bash
-bash -c 'source scripts/lib.sh; ensure_server_config'
-```
-
-准备 Manager 环境：
-
-```bash
-cp .manager.env.example .manager.env
-chmod 600 .manager.env
-```
-
-`.manager.env` 中：
-
-- `OPENSANDBOX_API_KEY` 必须等于 `.runtime/server.json` 的 `server_api_key`。
-- `LITELLM_MASTER_KEY` 必须与 `.litellm.env` 中的值一致。
-- `RUNNER_MANAGER_CREDENTIAL_ENCRYPTION_KEY` 用于加密 Manager 数据库中的 Bridge 和
-  LiteLLM 凭据，可用 Fernet 生成。
-- service token 供 `agent-runner` 使用；admin token 只供内部管理操作使用。两者都必须非空且
-  使用不同的随机值，否则对应身份不会正确创建。
-
-可以这样生成所需值：
-
-```bash
-# OPENSANDBOX_API_KEY
-jq -r .server_api_key .runtime/server.json
-
-# RUNNER_MANAGER_CREDENTIAL_ENCRYPTION_KEY
-uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
-
-# 分别执行两次，生成不同的 service/admin token
-openssl rand -hex 32
-openssl rand -hex 32
-```
+它会创建 `.litellm.env`、`.manager.env` 和 OpenSandbox 配置，并生成所需的本地 secret，不会输出
+secret 或覆盖已有值。接着仅需在 `.litellm.env` 填写至少一个模型供应商的 API key，例如
+`DEEPSEEK_API_KEY`。
 
 构建 Runner 镜像并启动控制面：
 

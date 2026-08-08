@@ -1,4 +1,4 @@
-.PHONY: lint test check docs-serve docs-build
+.PHONY: lint test check init-config docs-serve docs-build
 
 lint:
 	uv run ruff check .
@@ -8,6 +8,9 @@ test:
 	uv run pytest -q
 
 check: lint test
+
+init-config:
+	./scripts/init-config.sh
 
 docs-serve:
 	uv run --group docs mkdocs serve

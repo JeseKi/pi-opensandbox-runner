@@ -1,23 +1,17 @@
 # 启动 Pi OpenSandbox Runner
 
-## 准备环境文件
+## 准备配置
 
 ```bash
-cp .litellm.env.example .litellm.env
-cp .manager.env.example .manager.env
-chmod 600 .litellm.env .manager.env
+make init-config
 ```
 
-填写 `.litellm.env` 中的 `LITELLM_MASTER_KEY` 和至少一个模型供应商密钥。填写
-`.manager.env` 中的 OpenSandbox API key、同一个 LiteLLM master key、Manager 凭据加密 key，
-以及两个不同的 service/admin bootstrap token。
+该命令会创建 `.litellm.env`、`.manager.env` 和 OpenSandbox 本地配置；自动生成并写入全部本地
+secret，且不会打印它们。已有配置不会被覆盖。
 
-```bash
-bash -c 'source scripts/lib.sh; ensure_server_config'
-jq -r .server_api_key .runtime/server.json
-uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
-openssl rand -hex 32
-```
+然后只需编辑 `.litellm.env`，填写至少一个模型供应商的 API key，例如 `DEEPSEEK_API_KEY`。
+`LITELLM_MASTER_KEY`、OpenSandbox API key、Manager 加密 key 和 service/admin token 已由初始化命令
+正确配置，无需手动复制或生成。
 
 ## 构建并启动
 
